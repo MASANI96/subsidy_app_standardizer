@@ -1,0 +1,6 @@
+{
+  "name": "補助金申請標準化システム",
+  "description": "ヒアリング議事録からのマスターシート自動生成・補助金別申請書マッピング・修正差異分析を一元管理する社内業務支援モックシステム",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
