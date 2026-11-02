@@ -1,24 +1,35 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { SUBSIDY_TYPES } from '../data/initialData';
+import {
+  INITIAL_CROSS_CHECK_PROMPT,
+  INITIAL_THRESHOLDS,
+  SUBSIDY_TYPES,
+} from '../data/initialData';
 import {
   DiffLog,
   MasterSchemaTemplate,
   Role,
+  SubsidyRequirementThresholds,
   SubsidyType,
 } from '../types';
 import { DiffViewer } from './DiffViewer';
+
+export type AdminTabId = 'prompts' | 'diffs' | 'thresholds' | 'crosscheck';
 
 interface AdminDashboardProps {
   role: Role;
   masterTemplates: MasterSchemaTemplate[];
   diffLogs: DiffLog[];
+  thresholds: SubsidyRequirementThresholds;
+  crossCheckPrompt: string;
   promptSuggestionApplied: boolean;
-  defaultTab?: 'prompts' | 'diffs';
+  defaultTab?: AdminTabId;
   onAddTemplate: (title: string, prompt: string) => void;
   onUpdateTemplate: (id: string, title: string, prompt: string) => void;
   onDeleteTemplate: (id: string) => void;
   onMoveTemplate: (id: string, direction: 'up' | 'down') => void;
   onApplyPromptSuggestion: () => void;
+  onUpdateThresholds: (thresholds: SubsidyRequirementThresholds) => void;
+  onUpdateCrossCheckPrompt: (prompt: string) => void;
   onSwitchRoleToAdmin: () => void;
   onNotify: (message: string) => void;
 }
@@ -27,6 +38,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   role,
   masterTemplates,
   diffLogs,
+  thresholds,
+  crossCheckPrompt,
   promptSuggestionApplied,
   defaultTab = 'prompts',
   onAddTemplate,
@@ -34,27 +47,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onDeleteTemplate,
   onMoveTemplate,
   onApplyPromptSuggestion,
+  onUpdateThresholds,
+  onUpdateCrossCheckPrompt,
   onSwitchRoleToAdmin,
   onNotify,
 }) => {
-  const [activeTab, setActiveTab] = useState<'prompts' | 'diffs'>(defaultTab);
+  const [activeTab, setActiveTab] = useState<AdminTabId>(defaultTab);
 
   useEffect(() => {
     setActiveTab(defaultTab);
   }, [defaultTab]);
 
-  // Local editable drafts for masterTemplates
+  // Tab 1 state
   const [editTitles, setEditTitles] = useState<Record<string, string>>({});
   const [editPrompts, setEditPrompts] = useState<Record<string, string>>({});
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [savedNoticeId, setSavedNoticeId] = useState<string | null>(null);
-
-  // New item form state
   const [newTitle, setNewTitle] = useState('');
   const [newPrompt, setNewPrompt] = useState('');
 
-  // Diff filter state
+  // Tab 2 state
   const [subsidyFilter, setSubsidyFilter] = useState<string>('ALL');
+
+  // Tab 3 state (Thresholds)
+  const [draftThresholds, setDraftThresholds] =
+    useState<SubsidyRequirementThresholds>(thresholds);
+
+  // Tab 4 state (Cross-check prompt)
+  const [draftCrossPrompt, setDraftCrossPrompt] =
+    useState<string>(crossCheckPrompt);
 
   useEffect(() => {
     const nextTitles: Record<string, string> = {};
@@ -66,6 +87,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setEditTitles(nextTitles);
     setEditPrompts(nextPrompts);
   }, [masterTemplates]);
+
+  useEffect(() => {
+    setDraftThresholds(thresholds);
+  }, [thresholds]);
+
+  useEffect(() => {
+    setDraftCrossPrompt(crossCheckPrompt);
+  }, [crossCheckPrompt]);
 
   const filteredLogs = useMemo(() => {
     if (subsidyFilter === 'ALL') return diffLogs;
@@ -113,22 +142,41 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     );
   };
 
+  const handleSaveThresholdsSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onUpdateThresholds(draftThresholds);
+    onNotify(
+      '補助金公募要件しきい値マスタを保存しました。全案件の収支計画マスター判定ロジックへ即時反映されました。'
+    );
+  };
+
+  const handleSaveCrossCheckSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!draftCrossPrompt.trim()) {
+      onNotify('整合性クロスチェック用プロンプトを入力してください。');
+      return;
+    }
+    onUpdateCrossCheckPrompt(draftCrossPrompt.trim());
+    onNotify('整合性クロスチェック監査用AIプロンプトを保存しました。');
+  };
+
   return (
     <div className="space-y-6">
       {/* Screen Header */}
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 border-b border-slate-200 pb-4">
         <div>
           <p className="text-xs font-medium text-slate-500 mb-1">
-            画面4 · ナレッジ標準化・ガバナンス管理（現在ロール: {role}）
+            04. 管理者設定・差異分析 · 全社ガバナンス・公募要件管理（現在ロール:{' '}
+            {role}）
           </p>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            管理者設定・プロンプト管理・差異分析
+            管理者設定・プロンプト・要件しきい値・差異分析
           </h1>
         </div>
 
         {role !== 'システム管理者' && (
           <div className="flex items-center gap-3 bg-slate-100 border border-slate-300 px-3.5 py-2 text-xs text-slate-700">
-            <span>現在は「{role}」ロールで閲覧中です（デモ操作はそのまま可能）</span>
+            <span>現在は「{role}」ロールで閲覧中です</span>
             <button
               type="button"
               onClick={onSwitchRoleToAdmin}
@@ -140,30 +188,41 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         )}
       </div>
 
-      {/* Two-Tab Navigation */}
-      <div className="flex items-center border-b border-slate-300 bg-white px-4 pt-3 gap-2">
-        <button
-          type="button"
-          onClick={() => setActiveTab('prompts')}
-          className={`px-5 py-2.5 text-sm font-semibold border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
-            activeTab === 'prompts'
-              ? 'border-slate-900 text-slate-900'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          タブ1: マスター構成要素・プロンプト管理（{masterTemplates.length}項目）
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('diffs')}
-          className={`px-5 py-2.5 text-sm font-semibold border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
-            activeTab === 'diffs'
-              ? 'border-slate-900 text-slate-900'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          タブ2: 差異分析・プロンプト改善示唆（蓄積ログ {diffLogs.length}件）
-        </button>
+      {/* Four-Tab Navigation */}
+      <div className="flex items-center overflow-x-auto border-b border-slate-300 bg-white px-4 pt-3 gap-1">
+        {(
+          [
+            {
+              id: 'prompts',
+              label: `タブ1: マスター構成・抽出プロンプト（${masterTemplates.length}）`,
+            },
+            {
+              id: 'diffs',
+              label: `タブ2: 差異分析・改善示唆（${diffLogs.length}件）`,
+            },
+            {
+              id: 'thresholds',
+              label: 'タブ3: 補助金公募要件しきい値設定',
+            },
+            {
+              id: 'crosscheck',
+              label: 'タブ4: 整合性クロスチェック用プロンプト',
+            },
+          ] as const
+        ).map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-4 py-2.5 text-xs sm:text-sm font-semibold border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeTab === tab.id
+                ? 'border-slate-900 text-slate-900'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       {/* TAB 1: Master Schema & Prompt Management */}
@@ -173,10 +232,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3">
               <div>
                 <h2 className="text-base font-bold text-slate-900">
-                  マスターヒアリングシート構成項目とAI抽出指示プロンプト
+                  定性マスターシート構成項目とAI抽出指示プロンプト
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  ここで設定した構成項目・順序・プロンプトは、全案件の「画面2: マスターヒアリングシート」へ即時連動します。
+                  ここで設定した構成項目・順序・プロンプトは、全案件の「ワークスペース タブ2: 定性マスター」へ即時連動します。
                 </p>
               </div>
               {promptSuggestionApplied && (
@@ -229,7 +288,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         )}
                       </div>
 
-                      {/* Order & Delete Controls */}
                       <div className="flex items-center gap-1.5 shrink-0">
                         <button
                           type="button"
@@ -329,7 +387,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
           </div>
 
-          {/* Add New Master Item Section */}
           <form
             onSubmit={handleAddTemplateSubmit}
             className="bg-white border border-slate-200 p-6 space-y-4"
@@ -392,10 +449,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* TAB 2: Diff Analysis & Prompt Improvement Suggestion (Core Demo Feature) */}
+      {/* TAB 2: Diff Analysis & Prompt Improvement Suggestion */}
       {activeTab === 'diffs' && (
         <div className="space-y-6">
-          {/* Accumulated Data Improvement Suggestion Panel */}
           <section className="border border-slate-300 bg-white">
             <div className="bg-slate-900 text-white px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <h2 className="text-sm font-bold tracking-tight">
@@ -460,7 +516,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
           </section>
 
-          {/* Diff Log History List */}
           <section className="space-y-4">
             <div className="bg-white border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
@@ -497,7 +552,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             {filteredLogs.length === 0 ? (
               <div className="bg-white border border-slate-200 p-10 text-center text-sm text-slate-500">
-                該当する修正差異ログはまだ記録されていません。「画面3: 補助金申請書 作成・編集」で文面を編集し保存するとここに自動蓄積されます。
+                該当する修正差異ログはまだ記録されていません。「ワークスペース タブ4: 申請書 作成・編集」で文面を編集し保存すると自動蓄積されます。
               </div>
             ) : (
               <div className="space-y-5">
@@ -533,6 +588,397 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             )}
           </section>
         </div>
+      )}
+
+      {/* TAB 3: Subsidy Requirement Thresholds Settings */}
+      {activeTab === 'thresholds' && (
+        <form
+          onSubmit={handleSaveThresholdsSubmit}
+          className="bg-white border border-slate-200 p-6 space-y-6"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-4">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">
+                補助金公募要件・補助上限しきい値マスタ設定
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                公募回次の改正（付加価値額伸び率目標や補助上限額の変更等）に合わせて数値を更新すると、全案件の「収支計画マスター」判定に即時連動します。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setDraftThresholds(INITIAL_THRESHOLDS);
+                onUpdateThresholds(INITIAL_THRESHOLDS);
+                onNotify('公募要件しきい値を標準初期値に戻しました。');
+              }}
+              className="text-xs text-slate-600 hover:text-slate-900 underline self-start sm:self-auto cursor-pointer"
+            >
+              標準初期値に戻す
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* 新事業進出補助金 */}
+            <div className="border border-slate-200 p-5 space-y-4">
+              <h3 className="text-sm font-bold text-slate-900 border-b border-slate-100 pb-2">
+                1. 新事業進出補助金
+              </h3>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  付加価値額 年率伸び率目標（%）
+                </label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min={0}
+                  value={draftThresholds.shinJigyo.valueAddedGrowthRateAnnual}
+                  onChange={(e) =>
+                    setDraftThresholds((prev) => ({
+                      ...prev,
+                      shinJigyo: {
+                        ...prev.shinJigyo,
+                        valueAddedGrowthRateAnnual: Number(e.target.value) || 0,
+                      },
+                    }))
+                  }
+                  className="w-full font-mono tabular-nums border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-slate-800"
+                />
+                <span className="text-[11px] text-slate-500">
+                  標準: 3.0%（または4.0%）以上
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  給与支給総額 年率伸び率目標（%）
+                </label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min={0}
+                  value={draftThresholds.shinJigyo.wageGrowthRateAnnual}
+                  onChange={(e) =>
+                    setDraftThresholds((prev) => ({
+                      ...prev,
+                      shinJigyo: {
+                        ...prev.shinJigyo,
+                        wageGrowthRateAnnual: Number(e.target.value) || 0,
+                      },
+                    }))
+                  }
+                  className="w-full font-mono tabular-nums border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-slate-800"
+                />
+                <span className="text-[11px] text-slate-500">
+                  標準: 1.5%〜2.5%以上
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  補助上限額（万円）
+                </label>
+                <input
+                  type="number"
+                  step={100}
+                  min={100}
+                  value={draftThresholds.shinJigyo.maxSubsidyAmount}
+                  onChange={(e) =>
+                    setDraftThresholds((prev) => ({
+                      ...prev,
+                      shinJigyo: {
+                        ...prev.shinJigyo,
+                        maxSubsidyAmount: Number(e.target.value) || 0,
+                      },
+                    }))
+                  }
+                  className="w-full font-mono tabular-nums border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-slate-800"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    補助率（分子）
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={draftThresholds.shinJigyo.subsidyRateNumerator}
+                    onChange={(e) =>
+                      setDraftThresholds((prev) => ({
+                        ...prev,
+                        shinJigyo: {
+                          ...prev.shinJigyo,
+                          subsidyRateNumerator: Math.max(
+                            1,
+                            Number(e.target.value) || 1
+                          ),
+                        },
+                      }))
+                    }
+                    className="w-full font-mono tabular-nums border border-slate-300 px-3 py-2 text-sm text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    補助率（分母）
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={draftThresholds.shinJigyo.subsidyRateDenominator}
+                    onChange={(e) =>
+                      setDraftThresholds((prev) => ({
+                        ...prev,
+                        shinJigyo: {
+                          ...prev.shinJigyo,
+                          subsidyRateDenominator: Math.max(
+                            1,
+                            Number(e.target.value) || 1
+                          ),
+                        },
+                      }))
+                    }
+                    className="w-full font-mono tabular-nums border border-slate-300 px-3 py-2 text-sm text-slate-900"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* 小規模事業者持続化補助金 */}
+            <div className="border border-slate-200 p-5 space-y-4">
+              <h3 className="text-sm font-bold text-slate-900 border-b border-slate-100 pb-2">
+                2. 小規模事業者持続化補助金
+              </h3>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  補助上限額（万円）
+                </label>
+                <input
+                  type="number"
+                  step={50}
+                  min={50}
+                  value={draftThresholds.jizokuka.maxSubsidyAmount}
+                  onChange={(e) =>
+                    setDraftThresholds((prev) => ({
+                      ...prev,
+                      jizokuka: {
+                        ...prev.jizokuka,
+                        maxSubsidyAmount: Number(e.target.value) || 0,
+                      },
+                    }))
+                  }
+                  className="w-full font-mono tabular-nums border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-slate-800"
+                />
+                <span className="text-[11px] text-slate-500">
+                  標準: 通常枠50万円 / 賃金引上げ・特例枠200万円
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    補助率（分子）
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={draftThresholds.jizokuka.subsidyRateNumerator}
+                    onChange={(e) =>
+                      setDraftThresholds((prev) => ({
+                        ...prev,
+                        jizokuka: {
+                          ...prev.jizokuka,
+                          subsidyRateNumerator: Math.max(
+                            1,
+                            Number(e.target.value) || 1
+                          ),
+                        },
+                      }))
+                    }
+                    className="w-full font-mono tabular-nums border border-slate-300 px-3 py-2 text-sm text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    補助率（分母）
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={draftThresholds.jizokuka.subsidyRateDenominator}
+                    onChange={(e) =>
+                      setDraftThresholds((prev) => ({
+                        ...prev,
+                        jizokuka: {
+                          ...prev.jizokuka,
+                          subsidyRateDenominator: Math.max(
+                            1,
+                            Number(e.target.value) || 1
+                          ),
+                        },
+                      }))
+                    }
+                    className="w-full font-mono tabular-nums border border-slate-300 px-3 py-2 text-sm text-slate-900"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* 東京都経営強化基盤事業 */}
+            <div className="border border-slate-200 p-5 space-y-4">
+              <h3 className="text-sm font-bold text-slate-900 border-b border-slate-100 pb-2">
+                3. 東京都経営強化基盤事業
+              </h3>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  助成限度額（万円）
+                </label>
+                <input
+                  type="number"
+                  step={100}
+                  min={100}
+                  value={draftThresholds.tokyo.maxSubsidyAmount}
+                  onChange={(e) =>
+                    setDraftThresholds((prev) => ({
+                      ...prev,
+                      tokyo: {
+                        ...prev.tokyo,
+                        maxSubsidyAmount: Number(e.target.value) || 0,
+                      },
+                    }))
+                  }
+                  className="w-full font-mono tabular-nums border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-slate-800"
+                />
+                <span className="text-[11px] text-slate-500">
+                  標準: 1,500万円（または特例3,000万円）
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    助成率（分子）
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={draftThresholds.tokyo.subsidyRateNumerator}
+                    onChange={(e) =>
+                      setDraftThresholds((prev) => ({
+                        ...prev,
+                        tokyo: {
+                          ...prev.tokyo,
+                          subsidyRateNumerator: Math.max(
+                            1,
+                            Number(e.target.value) || 1
+                          ),
+                        },
+                      }))
+                    }
+                    className="w-full font-mono tabular-nums border border-slate-300 px-3 py-2 text-sm text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    助成率（分母）
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={draftThresholds.tokyo.subsidyRateDenominator}
+                    onChange={(e) =>
+                      setDraftThresholds((prev) => ({
+                        ...prev,
+                        tokyo: {
+                          ...prev.tokyo,
+                          subsidyRateDenominator: Math.max(
+                            1,
+                            Number(e.target.value) || 1
+                          ),
+                        },
+                      }))
+                    }
+                    className="w-full font-mono tabular-nums border border-slate-300 px-3 py-2 text-sm text-slate-900"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-4 border-t border-slate-200 flex items-center justify-end">
+            <button
+              type="submit"
+              className="px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              公募要件しきい値設定を保存する
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* TAB 4: Consistency Cross-Check AI Prompt Management */}
+      {activeTab === 'crosscheck' && (
+        <form
+          onSubmit={handleSaveCrossCheckSubmit}
+          className="bg-white border border-slate-200 p-6 space-y-5"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-4">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">
+                定性・定量 整合性クロスチェック監査プロンプト管理
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                「ワークスペース タブ5: 定性・定量 整合性チェック」にてAI監査を実行する際のシステム監査ルールを定義します。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setDraftCrossPrompt(INITIAL_CROSS_CHECK_PROMPT);
+                onUpdateCrossCheckPrompt(INITIAL_CROSS_CHECK_PROMPT);
+                onNotify('整合性クロスチェック用プロンプトを初期値に戻しました。');
+              }}
+              className="text-xs text-slate-600 hover:text-slate-900 underline self-start sm:self-auto cursor-pointer"
+            >
+              標準プロンプトへ復元
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <label
+                htmlFor="crosscheck-prompt-textarea"
+                className="font-semibold text-slate-700"
+              >
+                AIクロスチェック指示プロンプト全文
+              </label>
+              <span className="font-mono tabular-nums text-slate-500">
+                {draftCrossPrompt.length} 文字
+              </span>
+            </div>
+            <textarea
+              id="crosscheck-prompt-textarea"
+              rows={9}
+              value={draftCrossPrompt}
+              onChange={(e) => setDraftCrossPrompt(e.target.value)}
+              className="w-full border border-slate-300 bg-slate-50/50 p-4 text-sm leading-relaxed text-slate-900 focus:bg-white focus:outline-none focus:border-slate-800"
+            />
+          </div>
+
+          <div className="flex items-center justify-end pt-2 border-t border-slate-200">
+            <button
+              type="submit"
+              className="px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              監査プロンプトを保存する
+            </button>
+          </div>
+        </form>
       )}
     </div>
   );

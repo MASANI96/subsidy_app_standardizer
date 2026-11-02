@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Check } from 'lucide-react';
 import { SAMPLE_MEETING_MINUTES } from '../data/initialData';
 import { HearingMasterItem, Project, Role } from '../types';
 
@@ -18,7 +19,7 @@ interface HearingInputProps {
     content: string
   ) => void;
   onSyncMasterToSubsidies: (projectId: string) => void;
-  onNavigateToEditor: () => void;
+  onNavigateToFinancial: () => void;
   onNavigateBackToList: () => void;
   onNotify: (message: string) => void;
 }
@@ -26,7 +27,7 @@ interface HearingInputProps {
 const PARSE_STEPS = [
   'テキスト構造化中...',
   '公募要項キーフレーズ照合中...',
-  'マスターシートへマッピング中...',
+  '定性マスターシートへマッピング中...',
 ];
 
 export const HearingInput: React.FC<HearingInputProps> = ({
@@ -37,7 +38,7 @@ export const HearingInput: React.FC<HearingInputProps> = ({
   onGenerateMaster,
   onSaveMasterItem,
   onSyncMasterToSubsidies,
-  onNavigateToEditor,
+  onNavigateToFinancial,
   onNavigateBackToList,
   onNotify,
 }) => {
@@ -58,7 +59,6 @@ export const HearingInput: React.FC<HearingInputProps> = ({
   const [expandedPromptIds, setExpandedPromptIds] = useState<
     Record<string, boolean>
   >({});
-  const [hasSavedMasterSession, setHasSavedMasterSession] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const masterSectionRef = useRef<HTMLDivElement | null>(null);
@@ -72,9 +72,8 @@ export const HearingInput: React.FC<HearingInputProps> = ({
     setSavedItemFlags({});
   }, [project.id, project.masterItems]);
 
-  const hasAnyMasterContent = project.masterItems.some(
-    (m) => (draftItems[m.id] ?? m.content).trim().length > 0
-  );
+  const gate1 = project.gates.find((g) => g.id === 'gate-1');
+  const isGate1Passed = Boolean(gate1?.isPassed);
 
   const handleFileProcess = (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase();
@@ -156,45 +155,37 @@ export const HearingInput: React.FC<HearingInputProps> = ({
     setParseStepIndex(0);
     setParseProgress(0.33);
 
-    const t1 = window.setTimeout(() => {
+    window.setTimeout(() => {
       setParseStepIndex(1);
       setParseProgress(0.68);
     }, 680);
 
-    const t2 = window.setTimeout(() => {
+    window.setTimeout(() => {
       setParseStepIndex(2);
       setParseProgress(1);
     }, 1360);
 
-    const t3 = window.setTimeout(() => {
+    window.setTimeout(() => {
       onGenerateMaster(project.id);
       setIsParsing(false);
-      setHasSavedMasterSession(true);
       onNotify(
-        'ヒアリング情報の解析が完了し、マスターヒアリングシートおよび各補助金下書きへ反映しました。'
+        'ヒアリング情報の解析が完了し、定性マスターシート生成およびGate 1を通過しました。'
       );
       masterSectionRef.current?.scrollIntoView({
         behavior: 'smooth',
         block: 'start',
       });
     }, 2000);
-
-    return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-      window.clearTimeout(t3);
-    };
   };
 
   const handleSaveSingleItem = (item: HearingMasterItem) => {
     const val = draftItems[item.id] ?? item.content;
     onSaveMasterItem(project.id, item.id, val);
     setSavedItemFlags((prev) => ({ ...prev, [item.id]: true }));
-    setHasSavedMasterSession(true);
     onNotify(`マスター項目「${item.title}」を保存しました。`);
   };
 
-  const handleSaveAllAndSync = () => {
+  const handleConfirmGate1AndSync = () => {
     project.masterItems.forEach((item) => {
       const val = draftItems[item.id] ?? item.content;
       onSaveMasterItem(project.id, item.id, val);
@@ -205,9 +196,8 @@ export const HearingInput: React.FC<HearingInputProps> = ({
       allSaved[m.id] = true;
     });
     setSavedItemFlags(allSaved);
-    setHasSavedMasterSession(true);
     onNotify(
-      'マスターヒアリングシート全項目を保存し、3つの補助金フォーマットへ同期しました。'
+      'Gate 1（定性マスター）を確定し、3つの補助金フォーマットへ基礎文面を同期しました。'
     );
   };
 
@@ -225,13 +215,28 @@ export const HearingInput: React.FC<HearingInputProps> = ({
               ← 案件一覧へ戻る
             </button>
             <span aria-hidden="true">·</span>
-            <span>画面2 · ヒアリング構造化工程（現在ロール: {role}）</span>
+            <span>ワークスペース タブ2 · 定性マスター構造化（ロール: {role}）</span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            ヒアリングデータ読込・マスターシート生成
-          </h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+              ヒアリング議事録取込・定性マスター生成
+            </h1>
+            {isGate1Passed ? (
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 text-xs font-semibold text-emerald-900 bg-emerald-50 border border-emerald-300">
+                <Check className="w-3.5 h-3.5" />
+                Gate 1 確定済
+              </span>
+            ) : (
+              <span className="px-2.5 py-0.5 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300">
+                Gate 1 未確定
+              </span>
+            )}
+          </div>
           <p className="text-xs text-slate-600 mt-1">
-            対象案件: <span className="font-semibold text-slate-900">{project.companyName}</span>
+            対象案件:{' '}
+            <span className="font-semibold text-slate-900">
+              {project.companyName}
+            </span>
             {' · '}業種: {project.industry}
             {' · '}目標補助金額:{' '}
             <span className="font-mono tabular-nums font-semibold">
@@ -246,7 +251,7 @@ export const HearingInput: React.FC<HearingInputProps> = ({
             onClick={handleInsertSampleMinutes}
             className="px-3.5 py-2 text-xs font-semibold text-slate-900 bg-amber-50 border border-amber-300 hover:bg-amber-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            デモ用サンプル議事録をワンクリック挿入
+            デモ用サンプル議事録を挿入
           </button>
         </div>
       </div>
@@ -269,7 +274,6 @@ export const HearingInput: React.FC<HearingInputProps> = ({
           )}
         </div>
 
-        {/* Method A & Method B Side-by-Side */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Method A: File Drag & Drop */}
           <div className="space-y-2">
@@ -318,7 +322,10 @@ export const HearingInput: React.FC<HearingInputProps> = ({
               方式B: Google Drive / 社内共有フォルダURL連携
             </div>
             <div className="border border-slate-200 bg-slate-50 p-5 flex flex-col justify-between min-h-[106px]">
-              <label htmlFor="drive-url-input" className="text-xs text-slate-600 mb-2 block">
+              <label
+                htmlFor="drive-url-input"
+                className="text-xs text-slate-600 mb-2 block"
+              >
                 議事録ドキュメントまたはフォルダの共有URLを入力して取得
               </label>
               <div className="flex items-center gap-2">
@@ -352,34 +359,24 @@ export const HearingInput: React.FC<HearingInputProps> = ({
             >
               取込済ヒアリング原稿・打合せメモ（直接編集・追記可能）
             </label>
-            <div className="flex items-center gap-3 text-xs">
-              <button
-                type="button"
-                onClick={handleInsertSampleMinutes}
-                className="text-slate-700 hover:text-slate-900 underline cursor-pointer"
-              >
-                テックプレシジョン議事録をセット
-              </button>
-              <span className="font-mono tabular-nums text-slate-500">
-                原稿文字数: {project.rawHearingText.length} 文字
-              </span>
-            </div>
+            <span className="font-mono tabular-nums text-xs text-slate-500">
+              原稿文字数: {project.rawHearingText.length} 文字
+            </span>
           </div>
           <textarea
             id="raw-hearing-textarea"
-            rows={8}
+            rows={7}
             value={project.rawHearingText}
             onChange={(e) => onUpdateRawText(project.id, e.target.value)}
-            placeholder="「デモ用サンプル議事録をワンクリック挿入」ボタンを押すか、ここに会議メモ・メール文面を貼り付けてください。"
+            placeholder="「デモ用サンプル議事録を挿入」ボタンを押すか、ここに会議メモ・メール文面を貼り付けてください。"
             className="w-full bg-slate-50/60 border border-slate-300 p-3.5 text-sm leading-relaxed text-slate-900 focus:bg-white focus:outline-none focus:border-slate-800"
           />
         </div>
 
-        {/* Step 2: Parse Trigger & 2-Second Progress Feedback */}
         <div className="pt-2 border-t border-slate-200 flex flex-col items-center justify-between gap-4 sm:flex-row">
           <div className="text-xs text-slate-600">
             登録されているマスター抽出プロンプト（全{project.masterItems.length}項目
-            {promptSuggestionApplied ? ' · 改善案反映済' : ''}）に基づき自動構造化します。
+            {promptSuggestionApplied ? ' · 改善案反映済' : ''}）に基づき定性マスターを生成します。
           </div>
           <button
             type="button"
@@ -389,11 +386,10 @@ export const HearingInput: React.FC<HearingInputProps> = ({
           >
             {isParsing
               ? '解析処理を実行中...'
-              : 'ヒアリング情報を解析しマスターを自動生成'}
+              : 'ヒアリング情報を解析し定性マスターを自動生成'}
           </button>
         </div>
 
-        {/* 2-Second Simulated AI Progress Bar */}
         {isParsing && (
           <div className="border border-slate-300 bg-slate-50 p-4 space-y-2.5">
             <div className="flex items-center justify-between text-xs font-semibold text-slate-800">
@@ -408,25 +404,11 @@ export const HearingInput: React.FC<HearingInputProps> = ({
                 style={{ transform: `scaleX(${parseProgress})` }}
               />
             </div>
-            <div className="flex items-center gap-4 text-[11px] text-slate-500">
-              {PARSE_STEPS.map((label, idx) => (
-                <span
-                  key={label}
-                  className={
-                    idx <= parseStepIndex
-                      ? 'font-semibold text-slate-900'
-                      : 'text-slate-400'
-                  }
-                >
-                  {idx + 1}. {label}
-                </span>
-              ))}
-            </div>
           </div>
         )}
       </section>
 
-      {/* Step 3: Master Hearing Sheet (Auto-Extracted & Manually Editable) */}
+      {/* Step 2: Qualitative Master Sheet */}
       <section
         ref={masterSectionRef}
         className="bg-white border border-slate-200 p-6 space-y-6"
@@ -434,24 +416,22 @@ export const HearingInput: React.FC<HearingInputProps> = ({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-4">
           <div>
             <h2 className="text-base font-bold text-slate-900">
-              02. マスターヒアリングシート（全補助金共通・親データ）
+              02. 定性マスターシート（全補助金共通・親データ）
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              自動抽出された内容を精査・手動編集し保存してください。ここでの内容が3つの補助金フォーマットへ自動展開されます。
+              自動抽出された内容を精査・手動編集し、Gate 1として確定してください。
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleSaveAllAndSync}
-              className="px-4 py-2 text-xs font-semibold text-slate-900 bg-slate-100 border border-slate-300 hover:bg-slate-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              全項目を一括保存・補助金へ反映
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={handleConfirmGate1AndSync}
+            className="px-4 py-2 text-xs font-semibold text-slate-900 bg-slate-100 border border-slate-300 hover:bg-slate-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            定性マスター全項目を確定（Gate 1 通過・同期）
+          </button>
         </div>
 
-        <div className="space-y-6">
+        <div className="space-y-5">
           {project.masterItems.map((item, index) => {
             const currentVal = draftItems[item.id] ?? item.content;
             const isDirty = currentVal !== item.content;
@@ -484,7 +464,9 @@ export const HearingInput: React.FC<HearingInputProps> = ({
                       }
                       className="text-slate-500 hover:text-slate-800 underline whitespace-nowrap cursor-pointer"
                     >
-                      {promptOpen ? '抽出プロンプトを隠す' : '抽出プロンプトを確認'}
+                      {promptOpen
+                        ? '抽出プロンプトを隠す'
+                        : '抽出プロンプトを確認'}
                     </button>
                     <span className="text-slate-300" aria-hidden="true">
                       |
@@ -529,7 +511,7 @@ export const HearingInput: React.FC<HearingInputProps> = ({
                       [item.id]: e.target.value,
                     }))
                   }
-                  placeholder="上の「ヒアリング情報を解析しマスターを自動生成」を実行するか、直接入力してください。"
+                  placeholder="上の「ヒアリング情報を解析し定性マスターを自動生成」を実行するか、直接入力してください。"
                   className="w-full border border-slate-300 p-3 text-sm leading-relaxed text-slate-900 focus:outline-none focus:border-slate-800"
                 />
               </div>
@@ -537,24 +519,22 @@ export const HearingInput: React.FC<HearingInputProps> = ({
           })}
         </div>
 
-        {/* Proceed to Screen 3 Bar */}
-        {(hasSavedMasterSession || hasAnyMasterContent) && (
-          <div className="border-t border-slate-200 pt-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="text-xs text-slate-600">
-              マスターヒアリングシートの準備が整いました。各補助金の様式・文字数規定に合わせた申請書編集へ進めます。
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                handleSaveAllAndSync();
-                onNavigateToEditor();
-              }}
-              className="px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              補助金別マッピング・申請書作成画面へ進む →
-            </button>
+        {/* Proceed to Tab 3 (Financial Master) */}
+        <div className="border-t border-slate-200 pt-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="text-xs text-slate-600">
+            定性マスターを確認後、申請書執筆に入る前に必ず「03. 収支計画マスター」で数値計画・公募要件（Gate 2）を確定します。
           </div>
-        )}
+          <button
+            type="button"
+            onClick={() => {
+              handleConfirmGate1AndSync();
+              onNavigateToFinancial();
+            }}
+            className="px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            Gate 1を確定して「03. 収支計画マスター」へ進む →
+          </button>
+        </div>
       </section>
     </div>
   );

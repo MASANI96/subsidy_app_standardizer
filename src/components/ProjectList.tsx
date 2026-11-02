@@ -6,14 +6,14 @@ import {
   Project,
   ProjectStatus,
   Role,
-  ScreenId,
+  WorkspaceTabId,
 } from '../types';
 
 interface ProjectListProps {
   projects: Project[];
   selectedProjectId: string;
   role: Role;
-  onSelectProjectAndNavigate: (projectId: string, screen: ScreenId) => void;
+  onOpenWorkspace: (projectId: string, tab: WorkspaceTabId) => void;
   onUpdateProjectStatus: (projectId: string, status: ProjectStatus) => void;
   onAddProject: (input: NewProjectInput) => string;
   onNotify: (message: string) => void;
@@ -31,6 +31,7 @@ function getProjectStatusStyle(status: ProjectStatus): string {
     case 'ヒアリング中':
       return 'bg-amber-50 text-amber-900 border-amber-300';
     case 'マスター作成済':
+    case '収支計画作成中':
       return 'bg-sky-50 text-sky-900 border-sky-300';
     case '申請書作成中':
       return 'bg-indigo-50 text-indigo-950 border-indigo-300';
@@ -62,7 +63,7 @@ export const ProjectList: React.FC<ProjectListProps> = ({
   projects,
   selectedProjectId,
   role,
-  onSelectProjectAndNavigate,
+  onOpenWorkspace,
   onUpdateProjectStatus,
   onAddProject,
   onNotify,
@@ -98,11 +99,8 @@ export const ProjectList: React.FC<ProjectListProps> = ({
 
   const kpi = useMemo(() => {
     const total = projects.length;
-    const hearingOrMaster = projects.filter(
-      (p) =>
-        p.status === '未着手' ||
-        p.status === 'ヒアリング中' ||
-        p.status === 'マスター作成済'
+    const gate2LockedCount = projects.filter(
+      (p) => p.financialMaster.status === 'locked'
     ).length;
     const draftingOrReview = projects.filter(
       (p) =>
@@ -121,7 +119,7 @@ export const ProjectList: React.FC<ProjectListProps> = ({
 
     return {
       total,
-      hearingOrMaster,
+      gate2LockedCount,
       draftingOrReview,
       completedDocs,
       totalTargetManYen,
@@ -129,11 +127,13 @@ export const ProjectList: React.FC<ProjectListProps> = ({
   }, [projects]);
 
   const handleRowClick = (project: Project) => {
-    const targetScreen: ScreenId =
-      project.status === '未着手' || project.status === 'ヒアリング中'
-        ? 'hearing'
-        : 'editor';
-    onSelectProjectAndNavigate(project.id, targetScreen);
+    if (project.status === '未着手' || project.status === 'ヒアリング中') {
+      onOpenWorkspace(project.id, 'hearing');
+    } else if (project.financialMaster.status !== 'locked') {
+      onOpenWorkspace(project.id, 'financial');
+    } else {
+      onOpenWorkspace(project.id, 'editor');
+    }
   };
 
   const handleSubmitNewProject = (e: React.FormEvent) => {
@@ -143,8 +143,9 @@ export const ProjectList: React.FC<ProjectListProps> = ({
       return;
     }
     setFormError('');
+    const trimmedName = companyName.trim();
     const newId = onAddProject({
-      companyName,
+      companyName: trimmedName,
       industry,
       salesRep,
       writerName,
@@ -154,8 +155,10 @@ export const ProjectList: React.FC<ProjectListProps> = ({
     setModalOpen(false);
     setCompanyName('');
     setIndustry('');
-    onNotify(`新規案件「${companyName.trim()}」を登録しました。`);
-    onSelectProjectAndNavigate(newId, 'hearing');
+    onNotify(
+      `新規案件「${trimmedName}」を登録しました。ヒアリング・マスター工程を開始できます。`
+    );
+    onOpenWorkspace(newId, 'hearing');
   };
 
   return (
@@ -164,10 +167,10 @@ export const ProjectList: React.FC<ProjectListProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 border-b border-slate-200 pb-4">
         <div>
           <p className="text-xs font-medium text-slate-500 mb-1">
-            画面1 · 全社進捗台帳（現在ロール: {role}）
+            01. 案件一覧・台帳 · 全社フェーズゲート進捗管理（現在ロール: {role}）
           </p>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            案件一覧・進捗管理ダッシュボード
+            補助金支援案件 進捗管理台帳
           </h1>
         </div>
         <div className="flex items-center gap-3">
@@ -186,18 +189,21 @@ export const ProjectList: React.FC<ProjectListProps> = ({
         <div className="p-4">
           <div className="text-xs text-slate-500 mb-1">管理対象案件数</div>
           <div className="text-xl font-bold text-slate-900 font-mono tabular-nums">
-            {kpi.total} <span className="text-xs font-normal text-slate-500">件</span>
-          </div>
-        </div>
-        <div className="p-4">
-          <div className="text-xs text-slate-500 mb-1">ヒアリング・マスター工程</div>
-          <div className="text-xl font-bold text-slate-900 font-mono tabular-nums">
-            {kpi.hearingOrMaster}{' '}
+            {kpi.total}{' '}
             <span className="text-xs font-normal text-slate-500">件</span>
           </div>
         </div>
         <div className="p-4">
-          <div className="text-xs text-slate-500 mb-1">申請書作成・レビュー中</div>
+          <div className="text-xs text-slate-500 mb-1">
+            Gate 2（収支計画）確定済
+          </div>
+          <div className="text-xl font-bold text-slate-900 font-mono tabular-nums">
+            {kpi.gate2LockedCount} / {kpi.total}{' '}
+            <span className="text-xs font-normal text-slate-500">件</span>
+          </div>
+        </div>
+        <div className="p-4">
+          <div className="text-xs text-slate-500 mb-1">申請書執筆・レビュー中</div>
           <div className="text-xl font-bold text-slate-900 font-mono tabular-nums">
             {kpi.draftingOrReview}{' '}
             <span className="text-xs font-normal text-slate-500">件</span>
@@ -248,7 +254,9 @@ export const ProjectList: React.FC<ProjectListProps> = ({
               onChange={(e) => setStatusFilter(e.target.value)}
               className="bg-slate-50 border border-slate-300 px-3 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-slate-800"
             >
-              <option value="ALL">すべてのステータス（{projects.length}件）</option>
+              <option value="ALL">
+                すべてのステータス（{projects.length}件）
+              </option>
               {PROJECT_STATUS_LIST.map((st) => (
                 <option key={st} value={st}>
                   {formatStatusDisplay(st)}
@@ -270,7 +278,7 @@ export const ProjectList: React.FC<ProjectListProps> = ({
           </div>
         </div>
         <div className="text-xs text-slate-500">
-          行クリックで進捗に応じた作業画面へ遷移します（表示:{' '}
+          行クリックで現在のボトルネック工程タブへ遷移します（表示:{' '}
           <span className="font-mono tabular-nums font-semibold text-slate-800">
             {filteredProjects.length}
           </span>{' '}
@@ -284,23 +292,32 @@ export const ProjectList: React.FC<ProjectListProps> = ({
           <thead>
             <tr className="bg-slate-100 border-b border-slate-200 text-xs font-semibold text-slate-700">
               <th className="py-3 px-4 whitespace-nowrap">案件番号</th>
-              <th className="py-3 px-4 whitespace-nowrap">顧客（企業名 / 業種）</th>
-              <th className="py-3 px-4 whitespace-nowrap">担当営業 / 書類作成者</th>
+              <th className="py-3 px-4 whitespace-nowrap">
+                顧客（企業名 / 業種）
+              </th>
+              <th className="py-3 px-4 whitespace-nowrap">
+                担当営業 / 書類作成者
+              </th>
               <th className="py-3 px-4 whitespace-nowrap text-right">
-                申請期日 / 目標補助金額
+                期日 / 申請希望額（総投資）
+              </th>
+              <th className="py-3 px-4 whitespace-nowrap">
+                フェーズゲート通過状況（Gate 1〜4）
               </th>
               <th className="py-3 px-4 whitespace-nowrap">案件全体ステータス</th>
               <th className="py-3 px-4 whitespace-nowrap">
-                各補助金作成状況（3制度連動）
+                各補助金作成状況
               </th>
-              <th className="py-3 px-4 whitespace-nowrap text-right">画面遷移</th>
+              <th className="py-3 px-4 whitespace-nowrap text-right">
+                ワークスペース起動
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 text-sm">
             {filteredProjects.length === 0 ? (
               <tr>
                 <td
-                  colSpan={7}
+                  colSpan={8}
                   className="py-12 px-4 text-center text-sm text-slate-500"
                 >
                   該当する案件データがありません。検索条件を変更するか、「+ 新規案件登録」から追加してください。
@@ -314,6 +331,8 @@ export const ProjectList: React.FC<ProjectListProps> = ({
                   project.subsidies['小規模事業者持続化補助金'].status;
                 const tokyoStatus =
                   project.subsidies['東京都経営強化基盤事業'].status;
+                const gate2Locked =
+                  project.financialMaster.status === 'locked';
 
                 return (
                   <tr
@@ -361,6 +380,48 @@ export const ProjectList: React.FC<ProjectListProps> = ({
                       <div className="font-mono tabular-nums text-sm font-bold text-slate-900 mt-0.5">
                         {project.targetAmount}
                       </div>
+                      <div className="font-mono tabular-nums text-[11px] text-slate-500">
+                        総投資{' '}
+                        {project.financialMaster.investment.totalInvestment.toLocaleString()}
+                        万円
+                      </div>
+                    </td>
+
+                    {/* Phase Gates G1-G4 */}
+                    <td
+                      className="py-3.5 px-4 align-top whitespace-nowrap"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="grid grid-cols-2 gap-1 text-[11px] font-mono tabular-nums">
+                        {project.gates.map((gate) => {
+                          const targetTab: WorkspaceTabId =
+                            gate.number === 1
+                              ? 'hearing'
+                              : gate.number === 2
+                                ? 'financial'
+                                : gate.number === 3
+                                  ? 'consistency'
+                                  : 'schedule';
+                          return (
+                            <button
+                              key={gate.id}
+                              type="button"
+                              onClick={() =>
+                                onOpenWorkspace(project.id, targetTab)
+                              }
+                              title={`${gate.title}（クリックして移動）`}
+                              className={`px-2 py-0.5 border text-left transition-colors cursor-pointer whitespace-nowrap ${
+                                gate.isPassed
+                                  ? 'bg-emerald-50 border-emerald-300 text-emerald-900 font-semibold'
+                                  : 'bg-slate-50 border-slate-200 text-slate-500 hover:border-slate-400'
+                              }`}
+                            >
+                              G{gate.number}:{' '}
+                              {gate.isPassed ? '通過済' : '未通過'}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </td>
 
                     <td
@@ -382,7 +443,11 @@ export const ProjectList: React.FC<ProjectListProps> = ({
                         )}`}
                       >
                         {PROJECT_STATUS_LIST.map((st) => (
-                          <option key={st} value={st} className="bg-white text-slate-900">
+                          <option
+                            key={st}
+                            value={st}
+                            className="bg-white text-slate-900"
+                          >
                             {formatStatusDisplay(st)}
                           </option>
                         ))}
@@ -393,7 +458,7 @@ export const ProjectList: React.FC<ProjectListProps> = ({
                     </td>
 
                     <td className="py-3.5 px-4 align-top text-xs whitespace-nowrap">
-                      <div className="grid grid-cols-[auto_auto] gap-x-3 gap-y-1">
+                      <div className="grid grid-cols-[auto_auto] gap-x-2.5 gap-y-1">
                         <span className="text-slate-500">新事業進出:</span>
                         <span className={getDocStatusTextClass(shinStatus)}>
                           {shinStatus}
@@ -413,24 +478,31 @@ export const ProjectList: React.FC<ProjectListProps> = ({
                       className="py-3.5 px-4 align-top text-right whitespace-nowrap"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <div className="inline-flex items-center gap-1.5">
+                      <div className="inline-flex flex-col sm:flex-row items-end sm:items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() =>
-                            onSelectProjectAndNavigate(project.id, 'hearing')
+                            onOpenWorkspace(project.id, 'schedule')
                           }
                           className="px-2.5 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 transition-colors whitespace-nowrap cursor-pointer"
                         >
-                          議事録・マスター
+                          工程表
                         </button>
                         <button
                           type="button"
                           onClick={() =>
-                            onSelectProjectAndNavigate(project.id, 'editor')
+                            onOpenWorkspace(project.id, 'financial')
                           }
-                          className="px-2.5 py-1.5 text-xs font-medium text-white bg-slate-800 hover:bg-slate-900 transition-colors whitespace-nowrap cursor-pointer"
+                          className="px-2.5 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 transition-colors whitespace-nowrap cursor-pointer"
                         >
-                          申請書編集 →
+                          収支計画
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onOpenWorkspace(project.id, 'editor')}
+                          className="px-2.5 py-1.5 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
+                        >
+                          {gate2Locked ? '申請書編集 →' : '申請書(要G2) →'}
                         </button>
                       </div>
                     </td>
@@ -566,7 +638,7 @@ export const ProjectList: React.FC<ProjectListProps> = ({
                   type="submit"
                   className="px-5 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 transition-colors cursor-pointer"
                 >
-                  登録してヒアリング画面へ進む →
+                  登録してワークスペースを開く →
                 </button>
               </div>
             </form>

@@ -1,11 +1,15 @@
 import { useCallback, useRef, useState } from 'react';
-import { AdminDashboard } from './components/AdminDashboard';
+import { AdminDashboard, AdminTabId } from './components/AdminDashboard';
+import { ConsistencyChecker } from './components/ConsistencyChecker';
+import { FinancialMasterEditor } from './components/FinancialMasterEditor';
+import { GanttSchedule } from './components/GanttSchedule';
 import { Header } from './components/Header';
 import { HearingInput } from './components/HearingInput';
 import { ProjectList } from './components/ProjectList';
 import { SubsidyEditor } from './components/SubsidyEditor';
+import { TextModuleLibrary } from './components/TextModuleLibrary';
 import { useSubsidyStore } from './hooks/useSubsidyStore';
-import { ScreenId } from './types';
+import { ScreenId, WorkspaceTabId } from './types';
 
 export default function App() {
   const {
@@ -13,29 +17,42 @@ export default function App() {
     selectedProject,
     setRole,
     setActiveScreen,
+    setWorkspaceTab,
     selectProject,
     addProject,
     updateProjectStatus,
+    updateTaskStatus,
+    setGatePassed,
     updateRawHearingText,
     generateMasterFromHearing,
     saveMasterItem,
     syncMasterToSubsidies,
+    updateFinancialField,
+    updateInvestmentPlan,
+    lockFinancialPlan,
+    unlockFinancialPlan,
     updateSubsidySectionLength,
     regenerateSubsidySection,
     updateSubsidySectionText,
+    replaceTagsInSubsidyDocument,
     saveSubsidyDocument,
     updateSubsidyStatus,
+    addTextModule,
+    updateTextModule,
+    deleteTextModule,
+    toggleManualCheck,
+    runAICrossCheck,
     addMasterTemplate,
     updateMasterTemplate,
     deleteMasterTemplate,
     moveMasterTemplate,
     applyPromptImprovementSuggestion,
+    updateThresholds,
+    updateCrossCheckPrompt,
     resetAllData,
   } = useSubsidyStore();
 
-  const [adminDefaultTab, setAdminDefaultTab] = useState<'prompts' | 'diffs'>(
-    'prompts'
-  );
+  const [adminDefaultTab, setAdminDefaultTab] = useState<AdminTabId>('prompts');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
 
@@ -46,7 +63,7 @@ export default function App() {
     }
     toastTimerRef.current = window.setTimeout(() => {
       setToastMessage(null);
-    }, 4000);
+    }, 4200);
   }, []);
 
   const handleChangeScreen = useCallback(
@@ -60,16 +77,30 @@ export default function App() {
     [setActiveScreen]
   );
 
-  const handleNavigateToAdminDiff = useCallback(() => {
-    setAdminDefaultTab('diffs');
-    setActiveScreen('admin');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [setActiveScreen]);
+  const handleChangeWorkspaceTab = useCallback(
+    (tab: WorkspaceTabId) => {
+      setWorkspaceTab(tab);
+      if (state.activeScreen !== 'workspace') {
+        setActiveScreen('workspace');
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    [setWorkspaceTab, setActiveScreen, state.activeScreen]
+  );
+
+  const handleNavigateAdminTab = useCallback(
+    (tab: AdminTabId) => {
+      setAdminDefaultTab(tab);
+      setActiveScreen('admin');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    [setActiveScreen]
+  );
 
   const handleReset = useCallback(() => {
     resetAllData();
     setAdminDefaultTab('prompts');
-    showNotice('すべてのデータをデモ初期プリセット状態にリセットしました。');
+    showNotice('すべてのデータを初期プリセット状態にリセットしました。');
   }, [resetAllData, showNotice]);
 
   return (
@@ -77,24 +108,20 @@ export default function App() {
       <Header
         role={state.role}
         activeScreen={state.activeScreen}
+        workspaceTab={state.workspaceTab}
         projects={state.projects}
         selectedProject={selectedProject}
         onChangeRole={(nextRole) => {
           setRole(nextRole);
-          if (nextRole === 'システム管理者') {
-            showNotice(
-              'ロールを「システム管理者」に切り替えました。「04. 管理者設定・差異分析」からプロンプト管理・Diff分析を行えます。'
-            );
-          } else {
-            showNotice(`操作ロールを「${nextRole}」に切り替えました。`);
-          }
+          showNotice(`操作ロールを「${nextRole}」に切り替えました。`);
         }}
         onChangeScreen={handleChangeScreen}
+        onChangeWorkspaceTab={handleChangeWorkspaceTab}
         onSelectProject={(projectId) => selectProject(projectId)}
         onResetAll={handleReset}
       />
 
-      {/* Non-intrusive Action Feedback Banner */}
+      {/* Action Feedback Banner */}
       {toastMessage && (
         <div className="bg-slate-800 text-white border-b border-slate-700 px-6 py-2">
           <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-4 text-xs">
@@ -113,13 +140,14 @@ export default function App() {
 
       {/* Main Content Container */}
       <main className="flex-1 w-full max-w-[1400px] mx-auto px-6 py-8">
+        {/* Screen 01: Project List & Ledger */}
         {state.activeScreen === 'projects' && (
           <ProjectList
             projects={state.projects}
             selectedProjectId={selectedProject.id}
             role={state.role}
-            onSelectProjectAndNavigate={(projectId, targetScreen) => {
-              selectProject(projectId, targetScreen);
+            onOpenWorkspace={(projectId, tab) => {
+              selectProject(projectId, 'workspace', tab);
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
             onUpdateProjectStatus={updateProjectStatus}
@@ -128,41 +156,123 @@ export default function App() {
           />
         )}
 
-        {state.activeScreen === 'hearing' && (
-          <HearingInput
-            project={selectedProject}
+        {/* Screen 02: Case Workspace (5 Sub-Tabs) */}
+        {state.activeScreen === 'workspace' && (
+          <>
+            {state.workspaceTab === 'schedule' && (
+              <GanttSchedule
+                project={selectedProject}
+                role={state.role}
+                onUpdateTaskStatus={updateTaskStatus}
+                onToggleGatePassed={setGatePassed}
+                onNavigateTab={handleChangeWorkspaceTab}
+                onNavigateBackToList={() => handleChangeScreen('projects')}
+                onNotify={showNotice}
+              />
+            )}
+
+            {state.workspaceTab === 'hearing' && (
+              <HearingInput
+                project={selectedProject}
+                role={state.role}
+                promptSuggestionApplied={state.promptSuggestionApplied}
+                onUpdateRawText={updateRawHearingText}
+                onGenerateMaster={generateMasterFromHearing}
+                onSaveMasterItem={saveMasterItem}
+                onSyncMasterToSubsidies={syncMasterToSubsidies}
+                onNavigateToFinancial={() =>
+                  handleChangeWorkspaceTab('financial')
+                }
+                onNavigateBackToList={() => handleChangeScreen('projects')}
+                onNotify={showNotice}
+              />
+            )}
+
+            {state.workspaceTab === 'financial' && (
+              <FinancialMasterEditor
+                project={selectedProject}
+                role={state.role}
+                thresholds={state.thresholds}
+                onUpdateFinancialField={updateFinancialField}
+                onUpdateInvestmentPlan={updateInvestmentPlan}
+                onLockFinancialPlan={lockFinancialPlan}
+                onUnlockFinancialPlan={unlockFinancialPlan}
+                onNavigateToEditor={() => handleChangeWorkspaceTab('editor')}
+                onNavigateToThresholdsAdmin={() =>
+                  handleNavigateAdminTab('thresholds')
+                }
+                onNotify={showNotice}
+              />
+            )}
+
+            {state.workspaceTab === 'editor' && (
+              <SubsidyEditor
+                project={selectedProject}
+                role={state.role}
+                textModules={state.textModules}
+                onUpdateSectionLength={updateSubsidySectionLength}
+                onRegenerateSection={regenerateSubsidySection}
+                onUpdateSectionText={updateSubsidySectionText}
+                onReplaceAllTagsInDoc={replaceTagsInSubsidyDocument}
+                onSaveDocument={saveSubsidyDocument}
+                onUpdateDocumentStatus={updateSubsidyStatus}
+                onNavigateToFinancial={() =>
+                  handleChangeWorkspaceTab('financial')
+                }
+                onNavigateToConsistency={() =>
+                  handleChangeWorkspaceTab('consistency')
+                }
+                onNavigateToAdminDiff={() => handleNavigateAdminTab('diffs')}
+                onNotify={showNotice}
+              />
+            )}
+
+            {state.workspaceTab === 'consistency' && (
+              <ConsistencyChecker
+                project={selectedProject}
+                role={state.role}
+                crossCheckPrompt={state.crossCheckPrompt}
+                onRunAICrossCheck={runAICrossCheck}
+                onToggleManualCheck={toggleManualCheck}
+                onToggleGate3={(projectId, isPassed) =>
+                  setGatePassed(projectId, 'gate-3', isPassed)
+                }
+                onNavigateTab={handleChangeWorkspaceTab}
+                onNavigateAdminPrompt={() =>
+                  handleNavigateAdminTab('crosscheck')
+                }
+                onNotify={showNotice}
+              />
+            )}
+          </>
+        )}
+
+        {/* Screen 03: Text Module Library */}
+        {state.activeScreen === 'library' && (
+          <TextModuleLibrary
             role={state.role}
-            promptSuggestionApplied={state.promptSuggestionApplied}
-            onUpdateRawText={updateRawHearingText}
-            onGenerateMaster={generateMasterFromHearing}
-            onSaveMasterItem={saveMasterItem}
-            onSyncMasterToSubsidies={syncMasterToSubsidies}
-            onNavigateToEditor={() => handleChangeScreen('editor')}
-            onNavigateBackToList={() => handleChangeScreen('projects')}
+            modules={state.textModules}
+            selectedProject={selectedProject}
+            onAddModule={addTextModule}
+            onUpdateModule={updateTextModule}
+            onDeleteModule={deleteTextModule}
+            onNavigateToWorkspaceEditor={() => {
+              setActiveScreen('workspace');
+              setWorkspaceTab('editor');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
             onNotify={showNotice}
           />
         )}
 
-        {state.activeScreen === 'editor' && (
-          <SubsidyEditor
-            project={selectedProject}
-            role={state.role}
-            onUpdateSectionLength={updateSubsidySectionLength}
-            onRegenerateSection={regenerateSubsidySection}
-            onUpdateSectionText={updateSubsidySectionText}
-            onSaveDocument={saveSubsidyDocument}
-            onUpdateDocumentStatus={updateSubsidyStatus}
-            onNavigateToHearing={() => handleChangeScreen('hearing')}
-            onNavigateToAdminDiff={handleNavigateToAdminDiff}
-            onNotify={showNotice}
-          />
-        )}
-
+        {/* Screen 04: Admin Settings & Diff Analysis */}
         {state.activeScreen === 'admin' && (
           <AdminDashboard
             role={state.role}
             masterTemplates={state.masterTemplates}
             diffLogs={state.diffLogs}
+            thresholds={state.thresholds}
+            crossCheckPrompt={state.crossCheckPrompt}
             promptSuggestionApplied={state.promptSuggestionApplied}
             defaultTab={adminDefaultTab}
             onAddTemplate={addMasterTemplate}
@@ -170,6 +280,8 @@ export default function App() {
             onDeleteTemplate={deleteMasterTemplate}
             onMoveTemplate={moveMasterTemplate}
             onApplyPromptSuggestion={applyPromptImprovementSuggestion}
+            onUpdateThresholds={updateThresholds}
+            onUpdateCrossCheckPrompt={updateCrossCheckPrompt}
             onSwitchRoleToAdmin={() => setRole('システム管理者')}
             onNotify={showNotice}
           />
@@ -179,7 +291,7 @@ export default function App() {
       {/* Quiet Enterprise Footer */}
       <footer className="border-t border-slate-200 bg-white px-6 py-4 mt-12">
         <div className="max-w-[1400px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500">
-          <span>補助金申請標準化システム（社内業務支援プロトタイプ）</span>
+          <span>補助金申請標準化システム（社内業務支援システム）</span>
           <span>データ保存先: ブラウザ LocalStorage（外部通信なし）</span>
         </div>
       </footer>

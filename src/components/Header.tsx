@@ -1,50 +1,85 @@
 import React, { useState } from 'react';
-import { Project, Role, ScreenId } from '../types';
+import { Lock } from 'lucide-react';
+import { Project, Role, ScreenId, WorkspaceTabId } from '../types';
 
 interface HeaderProps {
   role: Role;
   activeScreen: ScreenId;
+  workspaceTab: WorkspaceTabId;
   projects: Project[];
   selectedProject: Project;
   onChangeRole: (role: Role) => void;
   onChangeScreen: (screen: ScreenId) => void;
+  onChangeWorkspaceTab: (tab: WorkspaceTabId) => void;
   onSelectProject: (projectId: string) => void;
   onResetAll: () => void;
 }
 
 const NAV_ITEMS: { id: ScreenId; label: string }[] = [
-  { id: 'projects', label: '01. 案件一覧・進捗管理' },
-  { id: 'hearing', label: '02. 議事録取込・マスター生成' },
-  { id: 'editor', label: '03. 補助金申請書 作成・編集' },
+  { id: 'projects', label: '01. 案件一覧・台帳' },
+  { id: 'workspace', label: '02. 案件ワークスペース' },
+  { id: 'library', label: '03. 文章モジュール' },
   { id: 'admin', label: '04. 管理者設定・差異分析' },
 ];
 
 const ROLES: Role[] = ['営業担当', '書類作成者', 'システム管理者'];
 
-const ROLE_DESCRIPTIONS: Record<Role, string> = {
-  営業担当: '案件登録・ヒアリング議事録取込・マスター初期確認を担当',
-  書類作成者: 'マスター精査・補助金別申請書の文字数調整および加筆修正を担当',
-  システム管理者: 'マスター項目定義・抽出プロンプト管理・修正差異ログ分析を担当',
-};
-
 export const Header: React.FC<HeaderProps> = ({
   role,
   activeScreen,
+  workspaceTab,
   projects,
   selectedProject,
   onChangeRole,
   onChangeScreen,
+  onChangeWorkspaceTab,
   onSelectProject,
   onResetAll,
 }) => {
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
 
-  const handleRoleSwitch = (nextRole: Role) => {
-    onChangeRole(nextRole);
-    if (nextRole === 'システム管理者' && activeScreen === 'projects') {
-      // Keep user in control, or allow one-click access to Screen 4
-    }
-  };
+  const gate1Passed = Boolean(
+    selectedProject.gates.find((g) => g.id === 'gate-1')?.isPassed
+  );
+  const gate2Locked = selectedProject.financialMaster.status === 'locked';
+  const gate3Passed = Boolean(
+    selectedProject.gates.find((g) => g.id === 'gate-3')?.isPassed
+  );
+  const passedGateCount = selectedProject.gates.filter((g) => g.isPassed).length;
+
+  const workspaceTabs: {
+    id: WorkspaceTabId;
+    label: string;
+    statusText: string;
+    isLocked?: boolean;
+  }[] = [
+    {
+      id: 'schedule',
+      label: '01. 工程表・ゲート',
+      statusText: `${passedGateCount}/4通過`,
+    },
+    {
+      id: 'hearing',
+      label: '02. ヒアリング・定性マスター',
+      statusText: gate1Passed ? 'Gate1済' : '未確定',
+    },
+    {
+      id: 'financial',
+      label: '03. 収支計画マスター',
+      statusText: gate2Locked ? 'Gate2済' : '要確定',
+    },
+    {
+      id: 'editor',
+      label: '04. 申請書 作成・編集',
+      statusText: gate2Locked ? '編集可' : 'ロック中',
+      isLocked: !gate2Locked,
+    },
+    {
+      id: 'consistency',
+      label: '05. 整合性チェック',
+      statusText: gate3Passed ? 'Gate3済' : '未検証',
+    },
+  ];
 
   return (
     <>
@@ -60,7 +95,7 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         {/* Zone 2: 4 Single-line Navigation Links */}
-        <nav className="hidden lg:flex items-center gap-6 text-sm font-medium">
+        <nav className="hidden lg:flex items-center gap-7 text-sm font-medium">
           {NAV_ITEMS.map((item) => {
             const isActive = activeScreen === item.id;
             return (
@@ -139,17 +174,17 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="hidden xl:inline text-slate-400" aria-hidden="true">
               ·
             </span>
-            <span className="hidden xl:inline text-slate-600">
+            <span className="hidden xl:inline text-slate-600 whitespace-nowrap">
               営業: {selectedProject.salesRep} / 作成: {selectedProject.writerName} / 期日:{' '}
-              <span className="font-mono tabular-nums">{selectedProject.deadline}</span>
+              <span className="font-mono tabular-nums">
+                {selectedProject.deadline}
+              </span>
             </span>
           </div>
 
           {/* Right: Role Switcher */}
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="hidden xl:inline text-xs text-slate-500">
-              {ROLE_DESCRIPTIONS[role]}
-            </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-xs text-slate-500 whitespace-nowrap">操作ロール:</span>
             <div className="flex items-center bg-slate-100 p-0.5 border border-slate-200">
               {ROLES.map((r) => {
                 const active = role === r;
@@ -157,10 +192,10 @@ export const Header: React.FC<HeaderProps> = ({
                   <button
                     key={r}
                     type="button"
-                    onClick={() => handleRoleSwitch(r)}
+                    onClick={() => onChangeRole(r)}
                     className={`px-3 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                       active
-                        ? 'bg-slate-900 text-white shadow-xs'
+                        ? 'bg-slate-900 text-white'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
@@ -173,7 +208,49 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Inline Reset Confirmation Modal (avoids window.confirm) */}
+      {/* Workspace 5-Tab Sub-Navigation Bar */}
+      {activeScreen === 'workspace' && (
+        <div className="bg-slate-100/80 border-b border-slate-200 px-6">
+          <div className="max-w-[1400px] mx-auto flex items-center gap-1 overflow-x-auto pt-2">
+            {workspaceTabs.map((tab) => {
+              const isActive = workspaceTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => onChangeWorkspaceTab(tab.id)}
+                  className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-t border-x transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    isActive
+                      ? 'bg-white border-slate-200 text-slate-900 -mb-px pb-[11px]'
+                      : 'bg-transparent border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-200/50'
+                  }`}
+                >
+                  {tab.isLocked && (
+                    <Lock className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                  )}
+                  <span>{tab.label}</span>
+                  <span className="text-slate-300" aria-hidden="true">
+                    /
+                  </span>
+                  <span
+                    className={`font-mono tabular-nums text-[11px] font-medium ${
+                      tab.isLocked
+                        ? 'text-amber-800'
+                        : tab.statusText.includes('済')
+                          ? 'text-emerald-800'
+                          : 'text-slate-500'
+                    }`}
+                  >
+                    {tab.statusText}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Inline Reset Confirmation Modal */}
       {confirmResetOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
@@ -189,7 +266,7 @@ export const Header: React.FC<HeaderProps> = ({
               システム状態の初期化確認
             </h2>
             <p className="text-sm text-slate-600 leading-relaxed mb-6">
-              ブラウザに保存されている案件追加・議事録編集・申請書修正履歴・プロンプト変更をすべて破棄し、デモ開始時の初期プリセット状態に復元します。よろしいですか？
+              ブラウザに保存されている案件追加・収支計画編集・フェーズゲート確定・モジュール変更・差異ログをすべて破棄し、デモ開始時の初期プリセット状態に復元します。よろしいですか？
             </p>
             <div className="flex items-center justify-end gap-3">
               <button
