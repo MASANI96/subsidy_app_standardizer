@@ -1,10 +1,24 @@
 import React, { useMemo, useState } from 'react';
 import { Check, Lock } from 'lucide-react';
-import { GanttTask, PhaseGate, Project, Role, WorkspaceTabId } from '../types';
+import {
+  EffectEstimateItem,
+  GanttTask,
+  PhaseGate,
+  Project,
+  Role,
+  WorkspaceTabId,
+} from '../types';
+import { canConfirmGate, canEdit } from '../utils/permissions';
+import {
+  ReadOnlyRoleBadge,
+  SpecTagBadge,
+  WorkspaceEffectBadge,
+} from './SpecTagBadge';
 
 interface GanttScheduleProps {
   project: Project;
   role: Role;
+  effectEstimate?: EffectEstimateItem;
   onUpdateTaskStatus: (
     projectId: string,
     taskId: string,
@@ -25,6 +39,7 @@ const WEEKS = [1, 2, 3, 4, 5, 6, 7, 8];
 export const GanttSchedule: React.FC<GanttScheduleProps> = ({
   project,
   role,
+  effectEstimate,
   onUpdateTaskStatus,
   onToggleGatePassed,
   onNavigateTab,
@@ -34,6 +49,9 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
   const [categoryFilter, setCategoryFilter] = useState<
     'all' | 'client' | 'support'
   >('all');
+
+  const canEditTasks = canEdit(role, 'schedule_task_edit');
+  const canConfirmGate4 = canConfirmGate(role, 'gate-4');
 
   // 最初の未通過ゲートを「現在地（アクティブゲート）」として判定
   const currentActiveGateNumber = useMemo(() => {
@@ -74,7 +92,7 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 border-b border-slate-200 pb-4">
         <div>
-          <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mb-1">
             <button
               type="button"
               onClick={onNavigateBackToList}
@@ -87,10 +105,17 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
               ワークスペース タブ1 · 標準8週間工程・フェーズゲート管理（ロール:{' '}
               {role}）
             </span>
+            <SpecTagBadge tag="指示書 4-⑥ / Step6" />
+            <WorkspaceEffectBadge estimate={effectEstimate} />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            工程表・フェーズゲート進捗管理
-          </h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+              標準工程表（ガントチャート）・フェーズゲート管理
+            </h1>
+            {!canConfirmGate4 && (
+              <ReadOnlyRoleBadge role={role} note="Gate 2〜4の確定は制限" />
+            )}
+          </div>
           <p className="text-xs text-slate-600 mt-1">
             対象案件:{' '}
             <span className="font-semibold text-slate-900">
@@ -121,7 +146,10 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
       </div>
 
       {/* Phase Gates Overview Strip (Gate 1 - Gate 4) */}
-      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 bg-white border border-slate-200 divide-y md:divide-y-0 md:divide-x divide-slate-200">
+      <section
+        data-guide-id="guide-gantt-gates"
+        className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 bg-white border border-slate-200 divide-y md:divide-y-0 md:divide-x divide-slate-200"
+      >
         {project.gates.map((gate) => {
           const isCurrent = gate.number === currentActiveGateNumber;
           const isPassed = gate.isPassed;
@@ -186,7 +214,7 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
                   >
                     該当工程を開く →
                   </button>
-                ) : (
+                ) : canConfirmGate4 ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -202,6 +230,14 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
                   >
                     {gate.isPassed ? '未完了に戻す' : '申請完了を記録'}
                   </button>
+                ) : (
+                  <span
+                    className="text-[11px] text-slate-400 inline-flex items-center gap-1"
+                    title={`${role}ロールではGate 4の確定はできません`}
+                  >
+                    <Lock className="w-3 h-3" />
+                    閲覧のみ
+                  </span>
                 )}
               </div>
             </div>
@@ -229,13 +265,17 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
       )}
 
       {/* 8-Week Standard Gantt Chart */}
-      <section className="bg-white border border-slate-200">
+      <section
+        data-guide-id="guide-gantt-chart"
+        className="bg-white border border-slate-200"
+      >
         {/* Toolbar & Legend */}
         <div className="p-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-sm font-bold text-slate-900">
-              標準8週間スケジュール（顧客タスク・支援タスク分離）
+              標準8週間スケジュール（顧客タスク・支援側タスク分離）
             </h2>
+            <SpecTagBadge tag="指示書 4-⑥" />
             <div className="flex items-center gap-4 text-xs text-slate-600">
               <span className="inline-flex items-center gap-1.5">
                 <span className="w-3 h-3 bg-amber-600 inline-block" />
@@ -298,6 +338,9 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
                 const isClient = task.category === 'client';
                 const isCompleted = task.status === 'completed';
                 const isInProgress = task.status === 'in_progress';
+                const canModifyThisRow = task.gateId
+                  ? canConfirmGate(role, task.gateId)
+                  : canEditTasks;
 
                 return (
                   <tr
@@ -314,7 +357,7 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
                             : 'bg-slate-100 text-slate-800 border-slate-300'
                         }`}
                       >
-                        {isClient ? '顧客タスク' : '支援タスク'}
+                        {isClient ? '顧客タスク' : '支援側タスク'}
                       </span>
                     </td>
 
@@ -344,6 +387,12 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
                     <td className="py-3 px-3 whitespace-nowrap">
                       <select
                         aria-label={`${task.title}の進捗ステータス`}
+                        disabled={!canModifyThisRow}
+                        title={
+                          canModifyThisRow
+                            ? 'タスク進捗を更新'
+                            : `${role}ロールではこのゲートタスクの確定はできません`
+                        }
                         value={task.status}
                         onChange={(e) => {
                           const next = e.target.value as GanttTask['status'];
@@ -358,6 +407,15 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
                                 ? 'Gate 2（収支計画）を確定済に更新し、申請書編集ロックを解除しました。'
                                 : 'Gate 2を未確定に戻しました。'
                             );
+                          } else if (task.gateId) {
+                            onToggleGatePassed(
+                              project.id,
+                              task.gateId,
+                              next === 'completed'
+                            );
+                            onNotify(
+                              `フェーズゲート「${task.title}」の状態を更新しました。`
+                            );
                           } else {
                             onUpdateTaskStatus(project.id, task.id, next);
                             onNotify(
@@ -365,7 +423,7 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
                             );
                           }
                         }}
-                        className={`border px-2 py-1 text-xs font-semibold focus:outline-none cursor-pointer ${
+                        className={`border px-2 py-1 text-xs font-semibold focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer ${
                           isCompleted
                             ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
                             : isInProgress

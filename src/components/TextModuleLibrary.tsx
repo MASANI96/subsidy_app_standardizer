@@ -2,15 +2,19 @@ import React, { useMemo, useState } from 'react';
 import { TEXT_MODULE_CATEGORIES } from '../data/initialData';
 import {
   Project,
+  ReviewCriterion,
   Role,
   TextModule,
   TextModuleCategory,
 } from '../types';
 import { interpolateTags } from '../utils/financialCalculations';
+import { canEdit } from '../utils/permissions';
+import { ReadOnlyRoleBadge, SpecTagBadge } from './SpecTagBadge';
 
 interface TextModuleLibraryProps {
   role: Role;
   modules: TextModule[];
+  reviewCriteria: ReviewCriterion[];
   selectedProject: Project;
   onAddModule: (mod: Omit<TextModule, 'id'>) => void;
   onUpdateModule: (id: string, mod: Omit<TextModule, 'id'>) => void;
@@ -19,6 +23,7 @@ interface TextModuleLibraryProps {
   onNotify: (message: string) => void;
 }
 
+// 既存16タグ ＋ M2新規追加5タグ（計21タグ）
 const AVAILABLE_TAGS = [
   '{企業名}',
   '{従業員数}',
@@ -36,6 +41,11 @@ const AVAILABLE_TAGS = [
   '{回収年数}',
   '{年間CF増加額}',
   '{削減時間}',
+  '{新事業客単価}',
+  '{初年度客数}',
+  '{年間削減時間}',
+  '{新規雇用人数}',
+  '{一人当たり給与伸び率}',
 ];
 
 function renderHighlightedTemplate(text: string): React.ReactNode {
@@ -57,6 +67,7 @@ function renderHighlightedTemplate(text: string): React.ReactNode {
 export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
   role,
   modules,
+  reviewCriteria,
   selectedProject,
   onAddModule,
   onUpdateModule,
@@ -68,6 +79,9 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
     TextModuleCategory | 'ALL'
   >('ALL');
   const [lengthTab, setLengthTab] = useState<'all' | 'short' | 'long'>('all');
+  const [criterionFilter, setCriterionFilter] = useState<string>('ALL');
+
+  const canEditLib = canEdit(role, 'library_edit');
 
   // Add / Edit Modal State
   const [modalOpen, setModalOpen] = useState(false);
@@ -77,7 +91,16 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
   const [lengthType, setLengthType] = useState<'short' | 'long'>('short');
   const [templateText, setTemplateText] = useState('');
   const [tagsInput, setTagsInput] = useState('');
+  const [selectedCriteriaIds, setSelectedCriteriaIds] = useState<string[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const criteriaMap = useMemo(() => {
+    const map: Record<string, ReviewCriterion> = {};
+    reviewCriteria.forEach((rc) => {
+      map[rc.id] = rc;
+    });
+    return map;
+  }, [reviewCriteria]);
 
   const filteredModules = useMemo(() => {
     return modules.filter((m) => {
@@ -87,34 +110,51 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
       if (lengthTab !== 'all' && m.lengthType !== lengthTab) {
         return false;
       }
+      if (
+        criterionFilter !== 'ALL' &&
+        !(m.relatedCriteriaIds ?? []).includes(criterionFilter)
+      ) {
+        return false;
+      }
       return true;
     });
-  }, [modules, categoryFilter, lengthTab]);
+  }, [modules, categoryFilter, lengthTab, criterionFilter]);
 
   const openCreateModal = () => {
+    if (!canEditLib) return;
     setEditingId(null);
     setTitle('');
     setCategory('effect');
     setLengthType('short');
     setTemplateText(
-      '総額{設備投資額}の導入により工程時間を{削減時間}削減し、初年度売上{初年度売上}、3年後売上{3年後売上}（営業利益率{3年後営業利益率}）を達成する。投資回収期間は約{回収年数}を見込む。'
+      '総額{設備投資額}の導入により年間{年間削減時間}を削減し、単価{新事業客単価}×初年度{初年度客数}から立上げ、3年後売上{3年後売上}・新規雇用{新規雇用人数}（一人当たり給与年率{一人当たり給与伸び率}）を達成する。'
     );
-    setTagsInput('収支連動, 採択実績あり');
+    setTagsInput('収支連動, 算定変数連動');
+    setSelectedCriteriaIds([]);
     setModalOpen(true);
   };
 
   const openEditModal = (mod: TextModule) => {
+    if (!canEditLib) return;
     setEditingId(mod.id);
     setTitle(mod.title);
     setCategory(mod.category);
     setLengthType(mod.lengthType);
     setTemplateText(mod.templateText);
     setTagsInput(mod.tags.join(', '));
+    setSelectedCriteriaIds(mod.relatedCriteriaIds ?? []);
     setModalOpen(true);
+  };
+
+  const toggleCriterionSelection = (cid: string) => {
+    setSelectedCriteriaIds((prev) =>
+      prev.includes(cid) ? prev.filter((id) => id !== cid) : [...prev, cid]
+    );
   };
 
   const handleSaveModal = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canEditLib) return;
     if (!title.trim() || !templateText.trim()) {
       onNotify('モジュール名とテンプレート本文を入力してください。');
       return;
@@ -134,6 +174,7 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
       lengthType,
       templateText: templateText.trim(),
       tags: parsedTags,
+      relatedCriteriaIds: selectedCriteriaIds,
     };
 
     if (editingId) {
@@ -151,13 +192,19 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 border-b border-slate-200 pb-4">
         <div>
-          <p className="text-xs font-medium text-slate-500 mb-1">
-            03. 文章モジュールライブラリ · 過去採択申請書ナレッジDB（現在ロール:{' '}
-            {role}）
-          </p>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            標準文章モジュール・変数タグライブラリ
-          </h1>
+          <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500 mb-1">
+            <span>
+              03. 文章モジュールライブラリ · 過去採択申請書ナレッジDB（現在ロール:{' '}
+              {role}）
+            </span>
+            <SpecTagBadge tag="指示書 4-③ / Step4" />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+              文章モジュールライブラリ（短文約200字・長文約500字以上／変数タグ連動）
+            </h1>
+            {!canEditLib && <ReadOnlyRoleBadge role={role} />}
+          </div>
           <p className="text-xs text-slate-600 mt-1">
             実数値プレビュー基準案件:{' '}
             <span className="font-semibold text-slate-900">
@@ -165,11 +212,13 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
             </span>
             {' · '}総投資額{' '}
             <span className="font-mono tabular-nums font-semibold">
-              {selectedProject.financialMaster.investment.totalInvestment.toLocaleString()}万円
+              {selectedProject.financialMaster.investment.totalInvestment.toLocaleString()}
+              万円
             </span>{' '}
             / 3年後売上{' '}
             <span className="font-mono tabular-nums font-semibold">
-              {selectedProject.financialMaster.forecast.y3.sales.toLocaleString()}万円
+              {selectedProject.financialMaster.forecast.y3.sales.toLocaleString()}
+              万円
             </span>
           </p>
         </div>
@@ -184,74 +233,131 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
           </button>
           <button
             type="button"
+            disabled={!canEditLib}
             onClick={openCreateModal}
-            className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
+            className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             + 新規モジュール登録
           </button>
         </div>
       </div>
 
-      {/* Filter & Length Switcher Toolbar */}
-      <div className="bg-white border border-slate-200 p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => setCategoryFilter('ALL')}
-            className={`px-3 py-1.5 text-xs font-medium border transition-colors cursor-pointer ${
-              categoryFilter === 'ALL'
-                ? 'bg-slate-900 text-white border-slate-900'
-                : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-            }`}
-          >
-            すべて（{modules.length}件）
-          </button>
-          {TEXT_MODULE_CATEGORIES.map((cat) => (
-            <button
-              key={cat.id}
-              type="button"
-              onClick={() => setCategoryFilter(cat.id)}
-              className={`px-3 py-1.5 text-xs font-medium border transition-colors whitespace-nowrap cursor-pointer ${
-                categoryFilter === cat.id
-                  ? 'bg-slate-900 text-white border-slate-900'
-                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-              }`}
-            >
-              {cat.label}
-            </button>
-          ))}
+      {/* Available Variable Tags Reference Bar (M2) */}
+      <div className="bg-white border border-slate-200 p-4 space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <span className="font-bold text-slate-900">
+            利用可能な収支マスター・算定変数タグ一覧（全{AVAILABLE_TAGS.length}種）
+          </span>
+          <span className="text-slate-500">
+            申請書挿入時に選択中案件の確定数値へ自動置換されます
+          </span>
         </div>
-
-        {/* Short (200) vs Long (500) Switching Tabs */}
-        <div className="flex items-center gap-1 bg-slate-100 p-0.5 border border-slate-200 self-start lg:self-auto shrink-0">
-          {(
-            [
-              { id: 'all', label: '全文字数' },
-              { id: 'short', label: '短文（約200字）' },
-              { id: 'long', label: '長文（約500字）' },
-            ] as const
-          ).map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setLengthTab(tab.id)}
-              className={`px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
-                lengthTab === tab.id
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
+        <div className="flex flex-wrap gap-1.5">
+          {AVAILABLE_TAGS.map((tag) => (
+            <span
+              key={tag}
+              className="px-2 py-0.5 text-[11px] font-mono bg-amber-50 text-amber-950 border border-amber-200"
             >
-              {tab.label}
-            </button>
+              {tag}
+            </span>
           ))}
         </div>
       </div>
 
+      {/* Filter & Length Switcher Toolbar */}
+      <div className="bg-white border border-slate-200 p-4 space-y-3">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setCategoryFilter('ALL')}
+              className={`px-3 py-1.5 text-xs font-medium border transition-colors cursor-pointer ${
+                categoryFilter === 'ALL'
+                  ? 'bg-slate-900 text-white border-slate-900'
+                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              すべて（{modules.length}件）
+            </button>
+            {TEXT_MODULE_CATEGORIES.map((cat) => (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => setCategoryFilter(cat.id)}
+                className={`px-3 py-1.5 text-xs font-medium border transition-colors whitespace-nowrap cursor-pointer ${
+                  categoryFilter === cat.id
+                    ? 'bg-slate-900 text-white border-slate-900'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Short (200) vs Long (500) Switching Tabs */}
+          <div className="flex items-center gap-1 bg-slate-100 p-0.5 border border-slate-200 self-start lg:self-auto shrink-0">
+            {(
+              [
+                { id: 'all', label: '全文字数' },
+                { id: 'short', label: '短文（約200字）' },
+                { id: 'long', label: '長文（約500字以上）' },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setLengthTab(tab.id)}
+                className={`px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                  lengthTab === tab.id
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* R2: Review Criteria Filter */}
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 text-xs">
+          <label
+            htmlFor="lib-criterion-filter"
+            className="font-semibold text-slate-700 whitespace-nowrap"
+          >
+            関連審査項目フィルタ:
+          </label>
+          <select
+            id="lib-criterion-filter"
+            value={criterionFilter}
+            onChange={(e) => setCriterionFilter(e.target.value)}
+            className="bg-slate-50 border border-slate-300 px-2.5 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-slate-800"
+          >
+            <option value="ALL">すべての審査項目</option>
+            {reviewCriteria.map((rc) => (
+              <option key={rc.id} value={rc.id}>
+                [{rc.subsidyType}] {rc.name}
+              </option>
+            ))}
+          </select>
+          {criterionFilter !== 'ALL' && (
+            <button
+              type="button"
+              onClick={() => setCriterionFilter('ALL')}
+              className="text-slate-600 hover:text-slate-900 underline cursor-pointer"
+            >
+              クリア
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Module Cards Grid */}
-      <div className="space-y-4">
+      <div data-guide-id="guide-library-list" className="space-y-4">
         {filteredModules.length === 0 ? (
           <div className="bg-white border border-slate-200 p-12 text-center text-sm text-slate-500">
-            該当するカテゴリの文章モジュールがありません。「+ 新規モジュール登録」から追加してください。
+            該当する条件の文章モジュールがありません。フィルタを変更するか、「+ 新規モジュール登録」から追加してください。
           </div>
         ) : (
           filteredModules.map((mod) => {
@@ -259,6 +365,9 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
               mod.templateText,
               selectedProject
             );
+            const linkedCriteria = (mod.relatedCriteriaIds ?? [])
+              .map((cid) => criteriaMap[cid])
+              .filter(Boolean);
 
             return (
               <article
@@ -275,7 +384,7 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
                       <span>
                         {mod.lengthType === 'short'
                           ? '短文仕様（約200字想定）'
-                          : '長文仕様（約500字想定）'}
+                          : '長文仕様（約500字以上想定）'}
                       </span>
                       {mod.tags.length > 0 && (
                         <>
@@ -287,48 +396,64 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
                     <h2 className="text-base font-bold text-slate-900 mt-1">
                       {mod.title}
                     </h2>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => openEditModal(mod)}
-                      className="px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 transition-colors cursor-pointer"
-                    >
-                      編集
-                    </button>
-
-                    {confirmDeleteId === mod.id ? (
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            onDeleteModule(mod.id);
-                            setConfirmDeleteId(null);
-                            onNotify(`モジュール「${mod.title}」を削除しました。`);
-                          }}
-                          className="px-2.5 py-1.5 text-xs font-semibold text-white bg-rose-700 hover:bg-rose-800 cursor-pointer"
-                        >
-                          削除確定
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDeleteId(null)}
-                          className="px-2 py-1.5 text-xs text-slate-600 bg-white border border-slate-300 hover:bg-slate-50 cursor-pointer"
-                        >
-                          取消
-                        </button>
+                    {linkedCriteria.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                        {linkedCriteria.map((rc) => (
+                          <span
+                            key={rc.id}
+                            className="px-2 py-0.5 text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200"
+                          >
+                            関連審査項目: [{rc.subsidyType}] {rc.name}
+                          </span>
+                        ))}
                       </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => setConfirmDeleteId(mod.id)}
-                        className="px-3 py-1.5 text-xs font-medium text-rose-800 bg-white border border-rose-200 hover:bg-rose-50 transition-colors cursor-pointer"
-                      >
-                        削除
-                      </button>
                     )}
                   </div>
+
+                  {canEditLib && (
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(mod)}
+                        className="px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 transition-colors cursor-pointer"
+                      >
+                        編集
+                      </button>
+
+                      {confirmDeleteId === mod.id ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onDeleteModule(mod.id);
+                              setConfirmDeleteId(null);
+                              onNotify(
+                                `モジュール「${mod.title}」を削除しました。`
+                              );
+                            }}
+                            className="px-2.5 py-1.5 text-xs font-semibold text-white bg-rose-700 hover:bg-rose-800 cursor-pointer"
+                          >
+                            削除確定
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(null)}
+                            className="px-2 py-1.5 text-xs text-slate-600 bg-white border border-slate-300 hover:bg-slate-50 cursor-pointer"
+                          >
+                            取消
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteId(mod.id)}
+                          className="px-3 py-1.5 text-xs font-medium text-rose-800 bg-white border border-rose-200 hover:bg-rose-50 transition-colors cursor-pointer"
+                        >
+                          削除
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Side-by-Side Template vs Live Real-Number Preview */}
@@ -445,7 +570,7 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
                     className="w-full border border-slate-300 px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:border-slate-800"
                   >
                     <option value="short">短文（約200字・持続化等）</option>
-                    <option value="long">長文（約500字・新事業進出等）</option>
+                    <option value="long">長文（約500字以上・新事業進出等）</option>
                   </select>
                 </div>
               </div>
@@ -490,6 +615,32 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
                   {interpolateTags(templateText, selectedProject)}
                 </p>
               </div>
+
+              {reviewCriteria.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold text-slate-700 mb-1.5">
+                    関連審査項目の紐付け（複数選択可）
+                  </div>
+                  <div className="max-h-36 overflow-y-auto border border-slate-200 p-2.5 grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs bg-slate-50/50">
+                    {reviewCriteria.map((rc) => (
+                      <label
+                        key={rc.id}
+                        className="flex items-center gap-2 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedCriteriaIds.includes(rc.id)}
+                          onChange={() => toggleCriterionSelection(rc.id)}
+                          className="accent-slate-900"
+                        />
+                        <span className="text-slate-700 truncate">
+                          [{rc.subsidyType.slice(0, 4)}] {rc.name}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">

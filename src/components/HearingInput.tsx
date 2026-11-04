@@ -1,17 +1,37 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Check } from 'lucide-react';
+import { Check, FileSpreadsheet } from 'lucide-react';
 import { SAMPLE_MEETING_MINUTES } from '../data/initialData';
-import { HearingMasterItem, Project, Role } from '../types';
+import {
+  EffectEstimateItem,
+  HearingMasterItem,
+  HearingRangeVariable,
+  HearingSingleVariable,
+  HearingVariables,
+  Project,
+  Role,
+} from '../types';
+import { canConfirmGate, canEdit } from '../utils/permissions';
+import {
+  ReadOnlyRoleBadge,
+  SpecTagBadge,
+  WorkspaceEffectBadge,
+} from './SpecTagBadge';
 
 interface HearingInputProps {
   project: Project;
   role: Role;
   promptSuggestionApplied: boolean;
+  effectEstimate?: EffectEstimateItem;
   onUpdateRawText: (
     projectId: string,
     text: string,
     sourceNote?: string
   ) => void;
+  onUpdateHearingVariables: (
+    projectId: string,
+    variables: HearingVariables
+  ) => void;
+  onImportSampleExcel: (projectId: string) => void;
   onGenerateMaster: (projectId: string) => void;
   onSaveMasterItem: (
     projectId: string,
@@ -30,11 +50,31 @@ const PARSE_STEPS = [
   '定性マスターシートへマッピング中...',
 ];
 
+type SingleVarKey =
+  | 'existingUnitPrice'
+  | 'newUnitPrice'
+  | 'newCustomerCountY1'
+  | 'newCustomerCountY2'
+  | 'newCustomerCountY3'
+  | 'repeatRate'
+  | 'reducedWorkHours'
+  | 'hourlyWage'
+  | 'subcontractReduction'
+  | 'newHiresY1'
+  | 'newHiresY2'
+  | 'newHiresY3'
+  | 'plannedWageGrowthRate';
+
+type RangeVarKey = 'defectRate' | 'leadTime' | 'productionCapacity';
+
 export const HearingInput: React.FC<HearingInputProps> = ({
   project,
   role,
   promptSuggestionApplied,
+  effectEstimate,
   onUpdateRawText,
+  onUpdateHearingVariables,
+  onImportSampleExcel,
   onGenerateMaster,
   onSaveMasterItem,
   onSyncMasterToSubsidies,
@@ -63,6 +103,9 @@ export const HearingInput: React.FC<HearingInputProps> = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const masterSectionRef = useRef<HTMLDivElement | null>(null);
 
+  const canEditHearing = canEdit(role, 'hearing_edit');
+  const canConfirmG1 = canConfirmGate(role, 'gate-1');
+
   useEffect(() => {
     const nextDrafts: Record<string, string> = {};
     project.masterItems.forEach((item) => {
@@ -74,9 +117,46 @@ export const HearingInput: React.FC<HearingInputProps> = ({
 
   const gate1 = project.gates.find((g) => g.id === 'gate-1');
   const isGate1Passed = Boolean(gate1?.isPassed);
+  const hv = project.hearingVariables;
+
+  const updateSingleVar = (
+    key: SingleVarKey,
+    patch: Partial<HearingSingleVariable>
+  ) => {
+    if (!canEditHearing) return;
+    onUpdateHearingVariables(project.id, {
+      ...hv,
+      [key]: {
+        ...hv[key],
+        ...patch,
+      },
+    });
+  };
+
+  const updateRangeVar = (
+    key: RangeVarKey,
+    patch: Partial<HearingRangeVariable>
+  ) => {
+    if (!canEditHearing) return;
+    onUpdateHearingVariables(project.id, {
+      ...hv,
+      [key]: {
+        ...hv[key],
+        ...patch,
+      },
+    });
+  };
 
   const handleFileProcess = (file: File) => {
+    if (!canEditHearing) return;
     const ext = file.name.split('.').pop()?.toLowerCase();
+    if (ext === 'xlsx' || ext === 'xls') {
+      onImportSampleExcel(project.id);
+      onNotify(
+        `ヒアリングシート「${file.name}」から数値計画の算定変数データを読み込みました。`
+      );
+      return;
+    }
     if (ext === 'pdf') {
       const simulatedPdfText =
         project.rawHearingText.trim() || SAMPLE_MEETING_MINUTES;
@@ -115,6 +195,7 @@ export const HearingInput: React.FC<HearingInputProps> = ({
   };
 
   const handleFetchFromUrl = () => {
+    if (!canEditHearing) return;
     if (!driveUrl.trim()) {
       onNotify('共有フォルダまたはドキュメントのURLを入力してください。');
       return;
@@ -132,6 +213,7 @@ export const HearingInput: React.FC<HearingInputProps> = ({
   };
 
   const handleInsertSampleMinutes = () => {
+    if (!canEditHearing) return;
     onUpdateRawText(
       project.id,
       SAMPLE_MEETING_MINUTES,
@@ -142,7 +224,16 @@ export const HearingInput: React.FC<HearingInputProps> = ({
     );
   };
 
+  const handleImportExcelSheet = () => {
+    if (!canEditHearing) return;
+    onImportSampleExcel(project.id);
+    onNotify(
+      `「${project.companyName}」のマスターヒアリングシート（Excel）から数値計画の算定変数（単価・客数・削減工数・雇用予定）を読み込みました。`
+    );
+  };
+
   const handleRunMasterGeneration = () => {
+    if (!canEditHearing) return;
     if (!project.rawHearingText.trim()) {
       onUpdateRawText(
         project.id,
@@ -179,6 +270,7 @@ export const HearingInput: React.FC<HearingInputProps> = ({
   };
 
   const handleSaveSingleItem = (item: HearingMasterItem) => {
+    if (!canEditHearing) return;
     const val = draftItems[item.id] ?? item.content;
     onSaveMasterItem(project.id, item.id, val);
     setSavedItemFlags((prev) => ({ ...prev, [item.id]: true }));
@@ -186,6 +278,7 @@ export const HearingInput: React.FC<HearingInputProps> = ({
   };
 
   const handleConfirmGate1AndSync = () => {
+    if (!canConfirmG1) return;
     project.masterItems.forEach((item) => {
       const val = draftItems[item.id] ?? item.content;
       onSaveMasterItem(project.id, item.id, val);
@@ -197,7 +290,109 @@ export const HearingInput: React.FC<HearingInputProps> = ({
     });
     setSavedItemFlags(allSaved);
     onNotify(
-      'Gate 1（定性マスター）を確定し、3つの補助金フォーマットへ基礎文面を同期しました。'
+      'Gate 1（マスターヒアリングシート）を確定し、3つの補助金フォーマットへ基礎文面を同期しました。'
+    );
+  };
+
+  const renderSingleVarRow = (
+    key: SingleVarKey,
+    label: string,
+    step = 1
+  ): React.ReactNode => {
+    const v = hv[key];
+    return (
+      <tr key={key} className="hover:bg-slate-50/50">
+        <td className="py-2.5 px-3 font-semibold text-slate-800 whitespace-nowrap">
+          {label}
+        </td>
+        <td className="py-2 px-3 whitespace-nowrap">
+          <div className="flex items-center justify-end gap-1.5">
+            <input
+              type="number"
+              step={step}
+              disabled={!canEditHearing}
+              value={v.value}
+              onChange={(e) =>
+                updateSingleVar(key, { value: Number(e.target.value) || 0 })
+              }
+              aria-label={label}
+              className="w-28 text-right font-mono tabular-nums border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-900 disabled:bg-slate-100 focus:outline-none focus:border-slate-800"
+            />
+            <span className="text-xs text-slate-500 w-12">{v.unit}</span>
+          </div>
+        </td>
+        <td className="py-2 px-3">
+          <input
+            type="text"
+            disabled={!canEditHearing}
+            value={v.sourceMemo}
+            onChange={(e) =>
+              updateSingleVar(key, { sourceMemo: e.target.value })
+            }
+            placeholder="ヒアリング発言・見積書・根拠資料名を記録..."
+            aria-label={`${label}の根拠メモ`}
+            className="w-full border border-slate-200 bg-slate-50/50 px-2.5 py-1 text-xs text-slate-800 focus:bg-white focus:outline-none focus:border-slate-800"
+          />
+        </td>
+      </tr>
+    );
+  };
+
+  const renderRangeVarRow = (
+    key: RangeVarKey,
+    label: string,
+    step = 0.1
+  ): React.ReactNode => {
+    const v = hv[key];
+    return (
+      <tr key={key} className="hover:bg-slate-50/50">
+        <td className="py-2.5 px-3 font-semibold text-slate-800 whitespace-nowrap">
+          {label}
+        </td>
+        <td className="py-2 px-3 whitespace-nowrap">
+          <div className="flex items-center justify-end gap-1.5">
+            <span className="text-[11px] text-slate-500">現状</span>
+            <input
+              type="number"
+              step={step}
+              disabled={!canEditHearing}
+              value={v.current}
+              onChange={(e) =>
+                updateRangeVar(key, { current: Number(e.target.value) || 0 })
+              }
+              aria-label={`${label}（現状）`}
+              className="w-20 text-right font-mono tabular-nums border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100 focus:outline-none focus:border-slate-800"
+            />
+            <span className="text-xs text-slate-400">→</span>
+            <span className="text-[11px] text-slate-500">目標</span>
+            <input
+              type="number"
+              step={step}
+              disabled={!canEditHearing}
+              value={v.target}
+              onChange={(e) =>
+                updateRangeVar(key, { target: Number(e.target.value) || 0 })
+              }
+              aria-label={`${label}（目標）`}
+              className="w-20 text-right font-mono tabular-nums border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100 focus:outline-none focus:border-slate-800"
+            />
+            <span className="text-xs text-slate-500 w-12">{v.unit}</span>
+          </div>
+        </td>
+        <td className="py-2 px-3">
+          <input
+            type="text"
+            disabled={!canEditHearing}
+            value={v.sourceMemo}
+            onChange={(e) =>
+              updateRangeVar(key, { sourceMemo: e.target.value })
+            }
+            placeholder="ヒアリング発言・根拠資料名を記録..."
+            aria-label={`${label}の根拠メモ`}
+            className="w-full border border-slate-200 bg-slate-50/50 px-2.5 py-1 text-xs text-slate-800 focus:bg-white focus:outline-none focus:border-slate-800"
+          />
+        </td>
+      </tr>
     );
   };
 
@@ -206,7 +401,7 @@ export const HearingInput: React.FC<HearingInputProps> = ({
       {/* Screen Header */}
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 border-b border-slate-200 pb-4">
         <div>
-          <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mb-1">
             <button
               type="button"
               onClick={onNavigateBackToList}
@@ -215,11 +410,15 @@ export const HearingInput: React.FC<HearingInputProps> = ({
               ← 案件一覧へ戻る
             </button>
             <span aria-hidden="true">·</span>
-            <span>ワークスペース タブ2 · 定性マスター構造化（ロール: {role}）</span>
+            <span>
+              ワークスペース タブ2 · 共通ヒアリングシート構造（ロール: {role}）
+            </span>
+            <SpecTagBadge tag="指示書 4-① / Step2" />
+            <WorkspaceEffectBadge estimate={effectEstimate} />
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-              ヒアリング議事録取込・定性マスター生成
+              マスターヒアリングシート（定性4項目＋数値計画の算定変数）
             </h1>
             {isGate1Passed ? (
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 text-xs font-semibold text-emerald-900 bg-emerald-50 border border-emerald-300">
@@ -231,6 +430,7 @@ export const HearingInput: React.FC<HearingInputProps> = ({
                 Gate 1 未確定
               </span>
             )}
+            {!canEditHearing && <ReadOnlyRoleBadge role={role} />}
           </div>
           <p className="text-xs text-slate-600 mt-1">
             対象案件:{' '}
@@ -245,27 +445,45 @@ export const HearingInput: React.FC<HearingInputProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            disabled={!canEditHearing}
+            onClick={handleImportExcelSheet}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-900 bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-800 shrink-0" />
+            <span>ヒアリングシート（Excel）を読み込む</span>
+          </button>
+          <button
+            type="button"
+            disabled={!canEditHearing}
             onClick={handleInsertSampleMinutes}
-            className="px-3.5 py-2 text-xs font-semibold text-slate-900 bg-amber-50 border border-amber-300 hover:bg-amber-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="px-3.5 py-2 text-xs font-semibold text-slate-900 bg-amber-50 border border-amber-300 hover:bg-amber-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             デモ用サンプル議事録を挿入
           </button>
         </div>
       </div>
 
-      {/* Step 1: Dual Input Methods + Raw Text Area */}
-      <section className="bg-white border border-slate-200 p-6 space-y-6">
+      {/* Step 1: Dual Input Methods + Excel Import + Raw Text Area */}
+      <section
+        data-guide-id="guide-hearing-import"
+        className="bg-white border border-slate-200 p-6 space-y-6"
+      >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3">
-          <div>
-            <h2 className="text-base font-bold text-slate-900">
-              01. ヒアリング原稿・議事録データの取込
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              ローカルファイル（.txt / .pdf）または共有フォルダURLから生議事録を取り込みます。
-            </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-slate-900">
+                  01. マスターヒアリングシート・議事録データの読み込み
+                </h2>
+                <SpecTagBadge tag="指示書 4-①" />
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                議事録ファイル（.txt / .pdf）、共有フォルダURL、または共通ヒアリングシート（Excel）から定性・定量の基礎情報を取り込みます。
+              </p>
+            </div>
           </div>
           {project.hearingSourceNote && (
             <span className="text-xs text-slate-600 font-mono">
@@ -274,11 +492,11 @@ export const HearingInput: React.FC<HearingInputProps> = ({
           )}
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           {/* Method A: File Drag & Drop */}
           <div className="space-y-2">
             <div className="text-xs font-semibold text-slate-800">
-              方式A: ファイル取込（.txt / .pdf 対応）
+              方式A: 議事録ファイル取込（.txt / .pdf 対応）
             </div>
             <div
               onDragOver={(e) => {
@@ -287,19 +505,19 @@ export const HearingInput: React.FC<HearingInputProps> = ({
               }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleDrop}
-              className={`border border-dashed p-5 text-center transition-colors ${
+              className={`border border-dashed p-4 text-center transition-colors min-h-[108px] flex flex-col items-center justify-center ${
                 isDragging
                   ? 'border-slate-900 bg-slate-100'
                   : 'border-slate-300 bg-slate-50'
               }`}
             >
-              <p className="text-xs text-slate-700 mb-3">
-                ここに議事録ファイル（.txt / .pdf）をドラッグ＆ドロップ、またはファイルを選択
+              <p className="text-xs text-slate-700 mb-2.5">
+                議事録（.txt / .pdf）をドラッグ＆ドロップまたは選択
               </p>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".txt,.pdf,.md,.csv"
+                accept=".txt,.pdf,.md,.csv,.xlsx,.xls"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) handleFileProcess(file);
@@ -308,8 +526,9 @@ export const HearingInput: React.FC<HearingInputProps> = ({
               />
               <button
                 type="button"
+                disabled={!canEditHearing}
                 onClick={() => fileInputRef.current?.click()}
-                className="px-4 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 transition-colors cursor-pointer"
+                className="px-3.5 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 transition-colors cursor-pointer"
               >
                 ファイルを選択...
               </button>
@@ -321,29 +540,53 @@ export const HearingInput: React.FC<HearingInputProps> = ({
             <div className="text-xs font-semibold text-slate-800">
               方式B: Google Drive / 社内共有フォルダURL連携
             </div>
-            <div className="border border-slate-200 bg-slate-50 p-5 flex flex-col justify-between min-h-[106px]">
+            <div className="border border-slate-200 bg-slate-50 p-4 flex flex-col justify-between min-h-[108px]">
               <label
                 htmlFor="drive-url-input"
                 className="text-xs text-slate-600 mb-2 block"
               >
-                議事録ドキュメントまたはフォルダの共有URLを入力して取得
+                議事録ドキュメントまたはフォルダの共有URLから取得
               </label>
               <div className="flex items-center gap-2">
                 <input
                   id="drive-url-input"
                   type="url"
+                  disabled={!canEditHearing}
                   value={driveUrl}
                   onChange={(e) => setDriveUrl(e.target.value)}
                   placeholder="https://drive.google.com/drive/folders/..."
-                  className="flex-1 bg-white border border-slate-300 px-3 py-1.5 text-xs font-mono text-slate-900 focus:outline-none focus:border-slate-800"
+                  className="flex-1 min-w-0 bg-white border border-slate-300 px-2.5 py-1.5 text-xs font-mono text-slate-900 focus:outline-none focus:border-slate-800"
                 />
                 <button
                   type="button"
-                  disabled={isFetchingUrl}
+                  disabled={isFetchingUrl || !canEditHearing}
                   onClick={handleFetchFromUrl}
-                  className="px-4 py-1.5 text-xs font-semibold text-slate-900 bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className="px-3.5 py-1.5 text-xs font-semibold text-slate-900 bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   {isFetchingUrl ? '取得中...' : '取得'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Method C: Common Hearing Sheet Excel Simulation */}
+          <div className="space-y-2">
+            <div className="text-xs font-semibold text-slate-800">
+              方式C: 共通マスターヒアリングシート（Excel）取込
+            </div>
+            <div className="border border-slate-200 bg-slate-50 p-4 flex flex-col justify-between min-h-[108px]">
+              <p className="text-xs text-slate-600 leading-relaxed">
+                顧客記入済のExcelシートから、単価・客数・工数削減・雇用予定などの「数値計画の算定変数」を一括反映します。
+              </p>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  disabled={!canEditHearing}
+                  onClick={handleImportExcelSheet}
+                  className="w-full inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-slate-900 bg-white border border-slate-300 hover:bg-slate-100 transition-colors cursor-pointer"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-800" />
+                  <span>ヒアリングシート（Excel）を読み込む</span>
                 </button>
               </div>
             </div>
@@ -365,7 +608,8 @@ export const HearingInput: React.FC<HearingInputProps> = ({
           </div>
           <textarea
             id="raw-hearing-textarea"
-            rows={7}
+            rows={6}
+            disabled={!canEditHearing}
             value={project.rawHearingText}
             onChange={(e) => onUpdateRawText(project.id, e.target.value)}
             placeholder="「デモ用サンプル議事録を挿入」ボタンを押すか、ここに会議メモ・メール文面を貼り付けてください。"
@@ -380,7 +624,7 @@ export const HearingInput: React.FC<HearingInputProps> = ({
           </div>
           <button
             type="button"
-            disabled={isParsing}
+            disabled={isParsing || !canEditHearing}
             onClick={handleRunMasterGeneration}
             className="w-full sm:w-auto px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:bg-slate-600 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
@@ -408,30 +652,27 @@ export const HearingInput: React.FC<HearingInputProps> = ({
         )}
       </section>
 
-      {/* Step 2: Qualitative Master Sheet */}
+      {/* Step 2: Qualitative Master Sheet (4 Common Master Items) */}
       <section
         ref={masterSectionRef}
+        data-guide-id="guide-hearing-master"
         className="bg-white border border-slate-200 p-6 space-y-6"
       >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-4">
           <div>
-            <h2 className="text-base font-bold text-slate-900">
-              02. 定性マスターシート（全補助金共通・親データ）
-            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900">
+                02. 共通ヒアリングシート 第1部：定性マスター4項目（全補助金共通・親データ）
+              </h2>
+              <SpecTagBadge tag="指示書 4-①" />
+            </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              自動抽出された内容を精査・手動編集し、Gate 1として確定してください。
+              自動抽出された定性4項目（強み／経営課題／導入設備／期待効果）を精査・編集します。3つの補助金のすべての申請文面がこの親データから展開されます。
             </p>
           </div>
-          <button
-            type="button"
-            onClick={handleConfirmGate1AndSync}
-            className="px-4 py-2 text-xs font-semibold text-slate-900 bg-slate-100 border border-slate-300 hover:bg-slate-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            定性マスター全項目を確定（Gate 1 通過・同期）
-          </button>
         </div>
 
-        <div className="space-y-5">
+        <div className="space-y-4">
           {project.masterItems.map((item, index) => {
             const currentVal = draftItems[item.id] ?? item.content;
             const isDirty = currentVal !== item.content;
@@ -485,8 +726,9 @@ export const HearingInput: React.FC<HearingInputProps> = ({
                     ) : null}
                     <button
                       type="button"
+                      disabled={!canEditHearing}
                       onClick={() => handleSaveSingleItem(item)}
-                      className="px-3 py-1 text-xs font-semibold text-slate-900 bg-white border border-slate-300 hover:bg-slate-100 transition-colors whitespace-nowrap cursor-pointer"
+                      className="px-3 py-1 text-xs font-semibold text-slate-900 bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-50 transition-colors whitespace-nowrap cursor-pointer"
                     >
                       保存
                     </button>
@@ -504,6 +746,7 @@ export const HearingInput: React.FC<HearingInputProps> = ({
 
                 <textarea
                   rows={3}
+                  disabled={!canEditHearing}
                   value={currentVal}
                   onChange={(e) =>
                     setDraftItems((prev) => ({
@@ -518,22 +761,209 @@ export const HearingInput: React.FC<HearingInputProps> = ({
             );
           })}
         </div>
+      </section>
 
-        {/* Proceed to Tab 3 (Financial Master) */}
-        <div className="border-t border-slate-200 pt-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="text-xs text-slate-600">
-            定性マスターを確認後、申請書執筆に入る前に必ず「03. 収支計画マスター」で数値計画・公募要件（Gate 2）を確定します。
+      {/* Step 3 (M1): Quantitative Plan Calculation Variables Section */}
+      <section
+        data-guide-id="guide-hearing-variables"
+        className="bg-white border border-slate-200 p-6 space-y-6"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900">
+                03. 共通ヒアリングシート 第2部：数値計画の算定変数（業種共通）
+              </h2>
+              <SpecTagBadge tag="指示書 Step2" />
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5">
+              収支計画の算定根拠となる「単価・数量・削減工数・リードタイム・雇用計画」と、その裏付け（発言・資料名）を記録します。次工程「タブ3: 収支計画マスター」へそのまま連動します。
+            </p>
           </div>
           <button
             type="button"
-            onClick={() => {
-              handleConfirmGate1AndSync();
-              onNavigateToFinancial();
-            }}
-            className="px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            disabled={!canEditHearing}
+            onClick={handleImportExcelSheet}
+            className="px-3.5 py-1.5 text-xs font-semibold text-slate-800 bg-slate-100 border border-slate-300 hover:bg-slate-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            Gate 1を確定して「03. 収支計画マスター」へ進む →
+            案件サンプル変数を再読込
           </button>
+        </div>
+
+        <div className="space-y-6">
+          {/* Group 1: 売上系 */}
+          <div className="border border-slate-200">
+            <div className="bg-slate-100 px-4 py-2 border-b border-slate-200 text-xs font-bold text-slate-900">
+              A. 売上系変数（単価 × 想定客数／受注件数）
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
+                    <th className="py-2 px-3 w-64">算定変数名</th>
+                    <th className="py-2 px-3 w-64 text-right">数値・単位</th>
+                    <th className="py-2 px-3">
+                      根拠メモ（ヒアリング発言・参照資料名）
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {renderSingleVarRow(
+                    'existingUnitPrice',
+                    '既存事業 客単価',
+                    1000
+                  )}
+                  {renderSingleVarRow('newUnitPrice', '新事業 客単価', 1000)}
+                  {renderSingleVarRow(
+                    'newCustomerCountY1',
+                    '新事業 想定客数／受注件数（1年目）',
+                    1
+                  )}
+                  {renderSingleVarRow(
+                    'newCustomerCountY2',
+                    '新事業 想定客数／受注件数（2年目）',
+                    1
+                  )}
+                  {renderSingleVarRow(
+                    'newCustomerCountY3',
+                    '新事業 想定客数／受注件数（3年目）',
+                    1
+                  )}
+                  {renderSingleVarRow('repeatRate', 'リピート率', 1)}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Group 2: コスト削減系 */}
+          <div className="border border-slate-200">
+            <div className="bg-slate-100 px-4 py-2 border-b border-slate-200 text-xs font-bold text-slate-900">
+              B. コスト削減系変数（作業工数削減・外注内製化・歩留まり改善）
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
+                    <th className="py-2 px-3 w-64">算定変数名</th>
+                    <th className="py-2 px-3 w-64 text-right">数値・単位</th>
+                    <th className="py-2 px-3">
+                      根拠メモ（ヒアリング発言・参照資料名）
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {renderSingleVarRow(
+                    'reducedWorkHours',
+                    '削減作業時間',
+                    10
+                  )}
+                  {renderSingleVarRow('hourlyWage', '時間単価', 100)}
+                  {renderSingleVarRow(
+                    'subcontractReduction',
+                    '外注費削減額',
+                    10
+                  )}
+                  {renderRangeVarRow('defectRate', '不良率（現状→目標）', 0.1)}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Group 3: 生産性系 & Group 4: 人員系 */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <div className="border border-slate-200">
+              <div className="bg-slate-100 px-4 py-2 border-b border-slate-200 text-xs font-bold text-slate-900">
+                C. 生産性系変数（リードタイム・月産能力）
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-left text-xs">
+                  <tbody className="divide-y divide-slate-200">
+                    {renderRangeVarRow(
+                      'leadTime',
+                      'リードタイム（現状→目標）',
+                      0.5
+                    )}
+                    {renderRangeVarRow(
+                      'productionCapacity',
+                      '生産能力（現状→目標）',
+                      10
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="border border-slate-200">
+              <div className="bg-slate-100 px-4 py-2 border-b border-slate-200 text-xs font-bold text-slate-900">
+                D. 人員・賃上げ計画変数（雇用創出・賃上げ率）
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-left text-xs">
+                  <tbody className="divide-y divide-slate-200">
+                    {renderSingleVarRow(
+                      'newHiresY1',
+                      '新規雇用予定人数（1年目）',
+                      1
+                    )}
+                    {renderSingleVarRow(
+                      'newHiresY2',
+                      '新規雇用予定人数（2年目）',
+                      1
+                    )}
+                    {renderSingleVarRow(
+                      'newHiresY3',
+                      '新規雇用予定人数（3年目）',
+                      1
+                    )}
+                    {renderSingleVarRow(
+                      'plannedWageGrowthRate',
+                      '賃上げ予定率',
+                      0.1
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Gate 1 Confirm & 3-Subsidy Sync Footer */}
+        <div
+          data-guide-id="guide-hearing-sync"
+          className="border-t border-slate-200 pt-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+        >
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-slate-900">
+                マスターヒアリングシートの確定と3補助金への初期同期（Gate 1）
+              </span>
+              <SpecTagBadge tag="指示書 2" />
+            </div>
+            <p className="text-xs text-slate-600">
+              確定すると、新事業進出（親・長文）・持続化（要約）・東京都（要件追加）の3様式へ基礎文面を一括同期し、「03. 収支計画マスター」へ進みます。
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={!canConfirmG1}
+              onClick={handleConfirmGate1AndSync}
+              className="px-4 py-2.5 text-xs font-semibold text-slate-900 bg-slate-100 border border-slate-300 hover:bg-slate-200 disabled:opacity-50 transition-colors whitespace-nowrap cursor-pointer"
+            >
+              全項目を確定・3補助金へ同期（Gate 1 通過）
+            </button>
+            <button
+              type="button"
+              disabled={!canConfirmG1}
+              onClick={() => {
+                handleConfirmGate1AndSync();
+                onNavigateToFinancial();
+              }}
+              className="px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-50 transition-colors whitespace-nowrap cursor-pointer"
+            >
+              Gate 1を確定して「03. 収支計画マスター」へ進む →
+            </button>
+          </div>
         </div>
       </section>
     </div>

@@ -3,8 +3,10 @@ import {
   DepreciationMethod,
   FinancialMaster,
   FinancialYearData,
+  HearingVariables,
   InvestmentPlan,
   Project,
+  ShinJigyoCapTier,
   SubsidyRequirementThresholds,
   SubsidyType,
 } from '../types';
@@ -48,6 +50,72 @@ export function recalculateYearData(
 }
 
 /**
+ * 一人当たり給与支給総額（万円/人）を計算する
+ */
+export function calculatePerCapitaWage(data: FinancialYearData): number {
+  if (!data.employees || data.employees <= 0) return 0;
+  return Number((data.totalWages / data.employees).toFixed(1));
+}
+
+/**
+ * M2: ヒアリング算定変数から新事業売上・コスト削減額・新規雇用合計を計算する
+ */
+export interface DriverCalculationSummary {
+  newSalesY1ManYen: number;
+  newSalesY2ManYen: number;
+  newSalesY3ManYen: number;
+  forecastSalesY1ManYen: number;
+  forecastSalesY2ManYen: number;
+  forecastSalesY3ManYen: number;
+  laborCostSavingManYen: number;
+  subcontractSavingManYen: number;
+  totalCostReductionManYen: number;
+  totalNewHires: number;
+}
+
+export function calculateDriverEstimates(
+  hv: HearingVariables,
+  baseSalesManYen: number
+): DriverCalculationSummary {
+  const unitPrice = Math.max(0, Number(hv.newUnitPrice.value) || 0);
+  const c1 = Math.max(0, Number(hv.newCustomerCountY1.value) || 0);
+  const c2 = Math.max(0, Number(hv.newCustomerCountY2.value) || 0);
+  const c3 = Math.max(0, Number(hv.newCustomerCountY3.value) || 0);
+
+  const newSalesY1ManYen = Math.round((unitPrice * c1) / 10000);
+  const newSalesY2ManYen = Math.round((unitPrice * c2) / 10000);
+  const newSalesY3ManYen = Math.round((unitPrice * c3) / 10000);
+
+  const hours = Math.max(0, Number(hv.reducedWorkHours.value) || 0);
+  const wage = Math.max(0, Number(hv.hourlyWage.value) || 0);
+  const laborCostSavingManYen = Math.round((hours * wage) / 10000);
+  const subcontractSavingManYen = Math.max(
+    0,
+    Number(hv.subcontractReduction.value) || 0
+  );
+  const totalCostReductionManYen =
+    laborCostSavingManYen + subcontractSavingManYen;
+
+  const totalNewHires =
+    Math.max(0, Math.round(Number(hv.newHiresY1.value) || 0)) +
+    Math.max(0, Math.round(Number(hv.newHiresY2.value) || 0)) +
+    Math.max(0, Math.round(Number(hv.newHiresY3.value) || 0));
+
+  return {
+    newSalesY1ManYen,
+    newSalesY2ManYen,
+    newSalesY3ManYen,
+    forecastSalesY1ManYen: baseSalesManYen + newSalesY1ManYen,
+    forecastSalesY2ManYen: baseSalesManYen + newSalesY2ManYen,
+    forecastSalesY3ManYen: baseSalesManYen + newSalesY3ManYen,
+    laborCostSavingManYen,
+    subcontractSavingManYen,
+    totalCostReductionManYen,
+    totalNewHires,
+  };
+}
+
+/**
  * 投資計画から総投資額を再計算する
  */
 export function recalculateInvestmentTotal(plan: InvestmentPlan): InvestmentPlan {
@@ -57,7 +125,10 @@ export function recalculateInvestmentTotal(plan: InvestmentPlan): InvestmentPlan
   const otherCost = Math.max(0, Number(plan.otherCost) || 0);
   const totalInvestment =
     machineryCost + systemCost + subcontractCost + otherCost;
-  const usefulLifeYears = Math.max(1, Math.round(Number(plan.usefulLifeYears) || 1));
+  const usefulLifeYears = Math.max(
+    1,
+    Math.round(Number(plan.usefulLifeYears) || 1)
+  );
 
   return {
     ...plan,
@@ -75,8 +146,6 @@ export function recalculateInvestmentTotal(plan: InvestmentPlan): InvestmentPlan
 
 /**
  * 新規設備投資分の各年度減価償却費（万円）を計算する
- * - 定額法 (straight-line): 総投資額 / 耐用年数（四捨五入）
- * - 定率法 (declining-balance): 200%定率法（償却率 = 2.0 / 耐用年数）
  */
 export function calculateNewDepreciationSchedule(
   totalInvestment: number,
@@ -143,7 +212,6 @@ export function calculateOperatingMargin(data: FinancialYearData): number {
 
 /**
  * 投資回収年数（概算）を計算する
- * 年間平均キャッシュフロー増加額 = 平均(将来1〜3年純利益 - 直前期純利益) + 平均新規減価償却費
  */
 export function calculatePaybackYears(fm: FinancialMaster): {
   years: number;
@@ -178,28 +246,69 @@ export function calculatePaybackYears(fm: FinancialMaster): {
 }
 
 /**
- * 3つの補助金に対する換算額・公募要件判定結果を返す
+ * 従業員数から新事業進出補助金の規模区分上限を判定する
+ */
+export function resolveShinJigyoCapTier(
+  baseEmployees: number,
+  capTiers: ShinJigyoCapTier[]
+): ShinJigyoCapTier {
+  const fallback: ShinJigyoCapTier = {
+    maxEmployees: 20,
+    label: '20人以下',
+    standardCap: 2500,
+    wageSpecialCap: 3000,
+  };
+  if (!capTiers || capTiers.length === 0) return fallback;
+
+  for (const tier of capTiers) {
+    if (tier.maxEmployees === null || baseEmployees <= tier.maxEmployees) {
+      return tier;
+    }
+  }
+  return capTiers[capTiers.length - 1];
+}
+
+/**
+ * M8: 3つの補助金に対する換算額・公募要件判定結果を返す
  */
 export interface SubsidyEvaluationSummary {
   vaGrowthAnnual: number;
-  wageGrowthAnnual: number;
+  wageGrowthAnnual: number; // 給与支給総額 年平均成長率
+  perCapitaWageBase: number;
+  perCapitaWageY3: number;
+  perCapitaWageGrowthAnnual: number; // 一人当たり給与支給総額 年平均成長率
   shinJigyo: {
     eligibleExpense: number;
+    appliedRateNum: number;
+    appliedRateDen: number;
+    tierLabel: string;
+    effectiveMaxCap: number;
+    minSubsidyAmount: number;
+    targetPerCapitaWageGrowth: number;
+    minWagePlusYen: number;
     calculatedSubsidy: number;
     cappedSubsidy: number;
     isVaPassed: boolean;
     isWagePassed: boolean;
     isFundingBalanced: boolean;
+    isMinSubsidyPassed: boolean;
+    isWithinCap: boolean;
     isAllPassed: boolean;
   };
   jizokuka: {
     eligibleExpense: number;
+    appliedRateNum: number;
+    appliedRateDen: number;
+    effectiveMaxCap: number;
     calculatedSubsidy: number;
     cappedSubsidy: number;
     isOverCapWarning: boolean;
   };
   tokyo: {
     eligibleExpense: number;
+    appliedRateNum: number;
+    appliedRateDen: number;
+    effectiveMaxCap: number;
     calculatedSubsidy: number;
     cappedSubsidy: number;
     isWithinCap: boolean;
@@ -210,6 +319,14 @@ export function evaluateSubsidyRequirements(
   fm: FinancialMaster,
   thresholds: SubsidyRequirementThresholds
 ): SubsidyEvaluationSummary {
+  const flags = fm.specialFlags ?? {
+    shinJigyoWageSpecial: false,
+    shinJigyoMinWageSpecial: false,
+    jizokukaInvoiceSpecial: false,
+    jizokukaWageSpecial: false,
+    jizokukaDeficit: false,
+  };
+
   const vaGrowthAnnual = calculateAnnualGrowthRate(
     fm.historical.yMinus1.valueAdded,
     fm.forecast.y3.valueAdded,
@@ -221,74 +338,152 @@ export function evaluateSubsidyRequirements(
     3
   );
 
+  const perCapitaWageBase =
+    fm.historical.yMinus1.employees > 0
+      ? fm.historical.yMinus1.totalWages / fm.historical.yMinus1.employees
+      : 0;
+  const perCapitaWageY3 =
+    fm.forecast.y3.employees > 0
+      ? fm.forecast.y3.totalWages / fm.forecast.y3.employees
+      : 0;
+  const perCapitaWageGrowthAnnual = calculateAnnualGrowthRate(
+    perCapitaWageBase,
+    perCapitaWageY3,
+    3
+  );
+
   const eligibleAll = fm.investment.totalInvestment;
   const eligibleTokyo =
     fm.investment.machineryCost + fm.investment.systemCost;
 
-  // 新事業進出補助金
-  const shinCalc = Math.floor(
-    (eligibleAll * thresholds.shinJigyo.subsidyRateNumerator) /
-      Math.max(1, thresholds.shinJigyo.subsidyRateDenominator)
+  // 1. 新事業進出補助金
+  const shinTier = resolveShinJigyoCapTier(
+    fm.historical.yMinus1.employees,
+    thresholds.shinJigyo.capTiers
   );
-  const shinCapped = Math.min(shinCalc, thresholds.shinJigyo.maxSubsidyAmount);
+  const shinEffectiveMaxCap = flags.shinJigyoWageSpecial
+    ? shinTier.wageSpecialCap
+    : shinTier.standardCap;
+  const shinRateNum = flags.shinJigyoMinWageSpecial
+    ? thresholds.shinJigyo.minWageSpecialRateNumerator
+    : thresholds.shinJigyo.subsidyRateNumerator;
+  const shinRateDen = flags.shinJigyoMinWageSpecial
+    ? thresholds.shinJigyo.minWageSpecialRateDenominator
+    : thresholds.shinJigyo.subsidyRateDenominator;
+  const targetPerCapitaWageGrowth = flags.shinJigyoWageSpecial
+    ? thresholds.shinJigyo.perCapitaWageGrowthSpecialAnnual
+    : thresholds.shinJigyo.perCapitaWageGrowthRateAnnual;
+  const minWagePlusYen = flags.shinJigyoMinWageSpecial
+    ? thresholds.shinJigyo.minWageSpecialPlusYen
+    : thresholds.shinJigyo.minWagePlusYen;
+
+  const shinCalc = Math.floor(
+    (eligibleAll * shinRateNum) / Math.max(1, shinRateDen)
+  );
+  const shinCapped = Math.min(shinCalc, shinEffectiveMaxCap);
+  const minSub = thresholds.shinJigyo.minSubsidyAmount;
+
   const isVaPassed =
     vaGrowthAnnual >= thresholds.shinJigyo.valueAddedGrowthRateAnnual;
-  const isWagePassed =
-    wageGrowthAnnual >= thresholds.shinJigyo.wageGrowthRateAnnual;
+  const isWagePassed = perCapitaWageGrowthAnnual >= targetPerCapitaWageGrowth;
   const totalFunding =
     fm.investment.subsidyRequested +
     fm.investment.ownFunds +
     fm.investment.bankLoan;
   const isFundingBalanced = totalFunding >= eligibleAll && eligibleAll > 0;
+  const isMinSubsidyPassed =
+    shinCapped >= minSub && fm.investment.subsidyRequested >= minSub;
+  const isWithinShinCap = fm.investment.subsidyRequested <= shinEffectiveMaxCap;
 
-  // 小規模事業者持続化補助金
+  // 2. 小規模事業者持続化補助金
+  const jizoEffectiveMaxCap =
+    thresholds.jizokuka.baseMaxSubsidyAmount +
+    (flags.jizokukaInvoiceSpecial
+      ? thresholds.jizokuka.invoiceSpecialBonus
+      : 0) +
+    (flags.jizokukaWageSpecial ? thresholds.jizokuka.wageSpecialBonus : 0);
+  const isJizoDeficitSpecial =
+    flags.jizokukaWageSpecial && flags.jizokukaDeficit;
+  const jizoRateNum = isJizoDeficitSpecial
+    ? thresholds.jizokuka.deficitWageSpecialRateNumerator
+    : thresholds.jizokuka.subsidyRateNumerator;
+  const jizoRateDen = isJizoDeficitSpecial
+    ? thresholds.jizokuka.deficitWageSpecialRateDenominator
+    : thresholds.jizokuka.subsidyRateDenominator;
+
   const jizoCalc = Math.floor(
-    (eligibleAll * thresholds.jizokuka.subsidyRateNumerator) /
-      Math.max(1, thresholds.jizokuka.subsidyRateDenominator)
+    (eligibleAll * jizoRateNum) / Math.max(1, jizoRateDen)
   );
-  const jizoCapped = Math.min(jizoCalc, thresholds.jizokuka.maxSubsidyAmount);
+  const jizoCapped = Math.min(jizoCalc, jizoEffectiveMaxCap);
 
-  // 東京都経営強化基盤事業（主に機械装置・システムが助成対象）
+  // 3. 東京都経営強化基盤事業（機械装置＋システムを対象）
+  const tokyoRateNum = thresholds.tokyo.subsidyRateNumerator;
+  const tokyoRateDen = thresholds.tokyo.subsidyRateDenominator;
   const tokyoCalc = Math.floor(
-    (eligibleTokyo * thresholds.tokyo.subsidyRateNumerator) /
-      Math.max(1, thresholds.tokyo.subsidyRateDenominator)
+    (eligibleTokyo * tokyoRateNum) / Math.max(1, tokyoRateDen)
   );
   const tokyoCapped = Math.min(tokyoCalc, thresholds.tokyo.maxSubsidyAmount);
 
   return {
     vaGrowthAnnual,
     wageGrowthAnnual,
+    perCapitaWageBase: Number(perCapitaWageBase.toFixed(1)),
+    perCapitaWageY3: Number(perCapitaWageY3.toFixed(1)),
+    perCapitaWageGrowthAnnual,
     shinJigyo: {
       eligibleExpense: eligibleAll,
+      appliedRateNum: shinRateNum,
+      appliedRateDen: shinRateDen,
+      tierLabel: shinTier.label,
+      effectiveMaxCap: shinEffectiveMaxCap,
+      minSubsidyAmount: minSub,
+      targetPerCapitaWageGrowth,
+      minWagePlusYen,
       calculatedSubsidy: shinCalc,
       cappedSubsidy: shinCapped,
       isVaPassed,
       isWagePassed,
       isFundingBalanced,
-      isAllPassed: isVaPassed && isWagePassed && isFundingBalanced,
+      isMinSubsidyPassed,
+      isWithinCap: isWithinShinCap,
+      isAllPassed:
+        isVaPassed &&
+        isWagePassed &&
+        isFundingBalanced &&
+        isMinSubsidyPassed &&
+        isWithinShinCap,
     },
     jizokuka: {
       eligibleExpense: eligibleAll,
+      appliedRateNum: jizoRateNum,
+      appliedRateDen: jizoRateDen,
+      effectiveMaxCap: jizoEffectiveMaxCap,
       calculatedSubsidy: jizoCalc,
       cappedSubsidy: jizoCapped,
-      isOverCapWarning: fm.investment.subsidyRequested > thresholds.jizokuka.maxSubsidyAmount,
+      isOverCapWarning: fm.investment.subsidyRequested > jizoEffectiveMaxCap,
     },
     tokyo: {
       eligibleExpense: eligibleTokyo,
+      appliedRateNum: tokyoRateNum,
+      appliedRateDen: tokyoRateDen,
+      effectiveMaxCap: thresholds.tokyo.maxSubsidyAmount,
       calculatedSubsidy: tokyoCalc,
       cappedSubsidy: tokyoCapped,
-      isWithinCap: fm.investment.subsidyRequested <= thresholds.tokyo.maxSubsidyAmount,
+      isWithinCap:
+        fm.investment.subsidyRequested <= thresholds.tokyo.maxSubsidyAmount,
     },
   };
 }
 
 /**
- * 文章モジュール・申請書内の変数タグを案件の収支計画マスター実数値で置換する
+ * 文章モジュール・申請書内の変数タグを案件の収支計画マスター・算定変数の実数値で置換する
+ * （§1-1: 既存の固定フォールバック値は厳守維持し、M2の5タグを追加）
  */
 export function interpolateTags(templateText: string, project: Project): string {
   if (!templateText) return '';
   const fm = project.financialMaster;
   const inv = fm.investment;
+  const hv = project.hearingVariables;
 
   const vaGrowth = calculateAnnualGrowthRate(
     fm.historical.yMinus1.valueAdded,
@@ -300,6 +495,20 @@ export function interpolateTags(templateText: string, project: Project): string 
     fm.forecast.y3.totalWages,
     3
   );
+  const perCapitaBase =
+    fm.historical.yMinus1.employees > 0
+      ? fm.historical.yMinus1.totalWages / fm.historical.yMinus1.employees
+      : 0;
+  const perCapitaY3 =
+    fm.forecast.y3.employees > 0
+      ? fm.forecast.y3.totalWages / fm.forecast.y3.employees
+      : 0;
+  const perCapitaWageGrowth = calculateAnnualGrowthRate(
+    perCapitaBase,
+    perCapitaY3,
+    3
+  );
+
   const payback = calculatePaybackYears(fm);
   const salesIncrease = Math.max(
     0,
@@ -307,13 +516,19 @@ export function interpolateTags(templateText: string, project: Project): string 
   );
   const y3Margin = calculateOperatingMargin(fm.forecast.y3);
 
-  // リードタイム短縮表記を議事録・マスターから抽出、なければ標準値
+  // リードタイム短縮表記（§1-1 案件ID別固定値を維持）
   let leadTimeText = '70%（14日→4日）';
   if (project.id === 'proj-edogawa-foods') {
     leadTimeText = '65%短縮';
   } else if (project.id === 'proj-sankyo-logistics') {
     leadTimeText = '84%（50分→8分）';
   }
+
+  const totalNewHires = hv
+    ? (hv.newHiresY1.value || 0) +
+      (hv.newHiresY2.value || 0) +
+      (hv.newHiresY3.value || 0)
+    : Math.max(0, fm.forecast.y3.employees - fm.historical.yMinus1.employees);
 
   const replacements: Record<string, string> = {
     '{企業名}': project.companyName,
@@ -328,13 +543,20 @@ export function interpolateTags(templateText: string, project: Project): string 
     '{3年後営業利益率}': `${y3Margin.toFixed(1)}%`,
     '{付加価値額年率}': `${vaGrowth.toFixed(1)}%`,
     '{給与伸び率}': `${wageGrowth.toFixed(1)}%`,
-    '{回収年数}': payback.years > 0 && payback.years < 90 ? `${payback.years}年` : '3.2年',
+    '{回収年数}':
+      payback.years > 0 && payback.years < 90 ? `${payback.years}年` : '3.2年',
     '{年間CF増加額}':
       payback.annualCashFlowIncrease > 0
         ? `${payback.annualCashFlowIncrease.toLocaleString()}万円`
         : '1,310万円',
     '{削減時間}': leadTimeText,
     '{従業員数}': `${fm.historical.yMinus1.employees}名`,
+    // M2 追加5タグ
+    '{新事業客単価}': `${(hv?.newUnitPrice.value ?? 0).toLocaleString()}円`,
+    '{初年度客数}': `${(hv?.newCustomerCountY1.value ?? 0).toLocaleString()}件`,
+    '{年間削減時間}': `${(hv?.reducedWorkHours.value ?? 0).toLocaleString()}時間`,
+    '{新規雇用人数}': `${totalNewHires}名`,
+    '{一人当たり給与伸び率}': `${perCapitaWageGrowth.toFixed(1)}%`,
   };
 
   let output = templateText;
@@ -373,7 +595,6 @@ function matchesAmountInText(
     return { matched: true, snippet: `${formattedOku}（=${formattedMan}）` };
   }
 
-  // 本文中にある他の「〇〇万円」や「〇.〇億円」を探索して不一致候補として提示
   const allAmounts = fullText.match(/[0-9,]+(?:\.[0-9]+)?(?:万円|億円)/g) ?? [];
   if (allAmounts.length > 0) {
     return {
@@ -386,16 +607,18 @@ function matchesAmountInText(
 }
 
 /**
- * 申請書本文と収支計画マスターの数値を自動突合する
+ * 申請書本文・ヒアリング変数と収支計画マスターの数値を自動突合する（既存7項目 ＋ M7強化3項目）
  */
 export function buildConsistencyCheckItems(
   project: Project,
-  subsidyType: SubsidyType = '新事業進出補助金'
+  subsidyType: SubsidyType = '新事業進出補助金',
+  thresholds?: SubsidyRequirementThresholds
 ): ConsistencyCheckItem[] {
   const doc = project.subsidies[subsidyType];
   const fullText = doc.sections.map((s) => s.currentText).join('\n');
   const fm = project.financialMaster;
   const inv = fm.investment;
+  const hv = project.hearingVariables;
 
   // 1. 総投資額
   const totalInvCheck = matchesAmountInText(fullText, inv.totalInvestment);
@@ -439,7 +662,9 @@ export function buildConsistencyCheckItems(
       ? 'unverified'
       : bothBreakdownMatched
         ? 'match'
-        : fullText.includes('万円') && !machCheck.matched && subsidyType !== '小規模事業者持続化補助金'
+        : fullText.includes('万円') &&
+            !machCheck.matched &&
+            subsidyType !== '小規模事業者持続化補助金'
           ? 'mismatch'
           : 'unverified',
     note: bothBreakdownMatched
@@ -448,7 +673,10 @@ export function buildConsistencyCheckItems(
   };
 
   // 3. 3年後売上増加額 / 3年後売上高
-  const salesDelta = Math.max(0, fm.forecast.y3.sales - fm.historical.yMinus1.sales);
+  const salesDelta = Math.max(
+    0,
+    fm.forecast.y3.sales - fm.historical.yMinus1.sales
+  );
   const deltaCheck = matchesAmountInText(fullText, salesDelta);
   const y3SalesCheck = matchesAmountInText(fullText, fm.forecast.y3.sales);
   const salesMatched = deltaCheck.matched || y3SalesCheck.matched;
@@ -476,7 +704,9 @@ export function buildConsistencyCheckItems(
   const y3Margin = calculateOperatingMargin(fm.forecast.y3);
   const marginStr = `${y3Margin.toFixed(1)}%`;
   const marginMatched = fullText.includes(marginStr);
-  const foundPercents = fullText.match(/営業利益率[^。、\n]{0,18}?([0-9]+(?:\.[0-9]+)?%)/g);
+  const foundPercents = fullText.match(
+    /営業利益率[^。、\n]{0,18}?([0-9]+(?:\.[0-9]+)?%)/g
+  );
   const item4: ConsistencyCheckItem = {
     id: 'chk-y3-margin',
     category: '効果・数値',
@@ -502,7 +732,9 @@ export function buildConsistencyCheckItems(
   // 5. 投資回収年数
   const payback = calculatePaybackYears(fm);
   const paybackStr = `${payback.years}年`;
-  const paybackRegex = fullText.match(/回収(?:期間|年数)[^。]{0,30}?([0-9]+(?:\.[0-9]+)?年)/);
+  const paybackRegex = fullText.match(
+    /回収(?:期間|年数)[^。]{0,30}?([0-9]+(?:\.[0-9]+)?年)/
+  );
   const paybackMatched = paybackRegex ? paybackRegex[1] === paybackStr : false;
   const item5: ConsistencyCheckItem = {
     id: 'chk-payback',
@@ -564,7 +796,8 @@ export function buildConsistencyCheckItems(
       ? leadTimeMatch[0]
       : 'リードタイム短縮率の定量記載なし',
     financialValue: `粗利率 ${(
-      (fm.historical.yMinus1.grossProfit / Math.max(1, fm.historical.yMinus1.sales)) *
+      (fm.historical.yMinus1.grossProfit /
+        Math.max(1, fm.historical.yMinus1.sales)) *
       100
     ).toFixed(1)}% → ${(
       (fm.forecast.y3.grossProfit / Math.max(1, fm.forecast.y3.sales)) *
@@ -576,5 +809,139 @@ export function buildConsistencyCheckItems(
       : '設備導入による時間短縮率（%）を具体数値で記述することを推奨します。',
   };
 
-  return [item1, item2, item3, item4, item5, item6, item7];
+  // 8. M7追加: 人員計画 ↔ 人件費（新規雇用予定人数とforecast従業員増・一人当たり給与成長率）
+  const plannedHires = hv
+    ? (hv.newHiresY1.value || 0) +
+      (hv.newHiresY2.value || 0) +
+      (hv.newHiresY3.value || 0)
+    : 0;
+  const actualEmpDelta = Math.max(
+    0,
+    fm.forecast.y3.employees - fm.historical.yMinus1.employees
+  );
+  const perCapitaBase = calculatePerCapitaWage(fm.historical.yMinus1);
+  const perCapitaY3 = calculatePerCapitaWage(fm.forecast.y3);
+  const perCapitaGrowth = calculateAnnualGrowthRate(
+    perCapitaBase,
+    perCapitaY3,
+    3
+  );
+  const reqWageTarget = fm.specialFlags?.shinJigyoWageSpecial
+    ? (thresholds?.shinJigyo.perCapitaWageGrowthSpecialAnnual ?? 6.0)
+    : (thresholds?.shinJigyo.perCapitaWageGrowthRateAnnual ?? 3.5);
+  const hiresMatched = plannedHires === actualEmpDelta;
+  const wageReqPassed = perCapitaGrowth >= reqWageTarget;
+
+  const item8: ConsistencyCheckItem = {
+    id: 'chk-hiring-wages',
+    category: '人件費・体制',
+    label: '人員計画 ↔ 人件費（新規雇用人数・一人当たり給与成長率）',
+    documentSnippet: `ヒアリング新規雇用計 +${plannedHires}名 / 賃上げ予定 ${hv?.plannedWageGrowthRate.value ?? 0}%`,
+    financialValue: `収支従業員増 +${actualEmpDelta}名 / 一人当たり給与年率 +${perCapitaGrowth}%（要件 ${reqWageTarget}%）`,
+    status: hiresMatched && wageReqPassed ? 'match' : 'mismatch',
+    note:
+      hiresMatched && wageReqPassed
+        ? 'ヒアリングの新規雇用予定人数と収支計画の従業員増が一致し、一人当たり給与年平均成長率も公募要件を満たしています。'
+        : !hiresMatched
+          ? `ヒアリングの新規雇用予定（計${plannedHires}名）と収支計画上の従業員増加数（+${actualEmpDelta}名）に不一致があります。`
+          : `一人当たり給与支給総額の年平均成長率（${perCapitaGrowth}%）が公募要件（${reqWageTarget}%以上）を下回っています。`,
+  };
+
+  // 9. M7追加: 設備スペック ↔ 投資内訳（定性マスター③・申請書第2項の「万円」表記と投資内訳）
+  const master3Text =
+    project.masterItems.find((m) => m.id === 'master-3')?.content ?? '';
+  const sec2Text = doc.sections[1]?.currentText ?? '';
+  const combinedEquipText = `${master3Text}\n${sec2Text}`;
+  const rawManMatches =
+    combinedEquipText.match(/([0-9,]+)\s*万円/g)?.map((s) =>
+      Number(s.replace(/[^0-9]/g, ''))
+    ) ?? [];
+  const validEquipAmounts = new Set(
+    [
+      inv.machineryCost,
+      inv.systemCost,
+      inv.subcontractCost,
+      inv.otherCost,
+      inv.totalInvestment,
+      inv.subsidyRequested,
+    ].filter((v) => v > 0)
+  );
+  const uniqueExtracted = Array.from(new Set(rawManMatches)).filter((n) => n > 0);
+  const allEquipAmountsConsistent =
+    uniqueExtracted.length > 0 &&
+    uniqueExtracted.every((n) => validEquipAmounts.has(n));
+  const hasMachOrTotal =
+    uniqueExtracted.includes(inv.machineryCost) ||
+    uniqueExtracted.includes(inv.totalInvestment);
+
+  const item9: ConsistencyCheckItem = {
+    id: 'chk-spec-vs-inv',
+    category: '設備スペック',
+    label: '設備スペック ↔ 投資内訳（定性マスター③・本文の金額抽出）',
+    documentSnippet:
+      uniqueExtracted.length > 0
+        ? `抽出金額: ${uniqueExtracted.map((n) => `${n.toLocaleString()}万円`).join(' / ')}`
+        : '定性マスター③・設備欄に金額表記なし',
+    financialValue: `機械 ${inv.machineryCost.toLocaleString()}万円 ＋ システム ${inv.systemCost.toLocaleString()}万円（計 ${inv.totalInvestment.toLocaleString()}万円）`,
+    status:
+      uniqueExtracted.length === 0
+        ? 'unverified'
+        : allEquipAmountsConsistent && hasMachOrTotal
+          ? 'match'
+          : 'mismatch',
+    note:
+      uniqueExtracted.length === 0
+        ? '定性マスター③および設備導入セクションに具体的な金額（万円）の明記がありません。'
+        : allEquipAmountsConsistent && hasMachOrTotal
+          ? '定性マスター③および本文中の設備関連金額が投資計画の内訳・総額と完全に一致しています。'
+          : '定性マスター③または本文中に、投資計画（機械装置費・システム費・総額）と異なる金額表記が含まれています。',
+  };
+
+  // 10. M7追加: ターゲット規模 ↔ 売上高（単価×客数の算定根拠と forecast 売上の整合・未反映検出）
+  const drivers = hv
+    ? calculateDriverEstimates(hv, fm.historical.yMinus1.sales)
+    : null;
+  const isDriversPopulated =
+    drivers !== null &&
+    hv.newUnitPrice.value > 0 &&
+    hv.newCustomerCountY3.value > 0;
+  const isDriversReflected =
+    isDriversPopulated &&
+    drivers.forecastSalesY1ManYen === fm.forecast.y1.sales &&
+    drivers.forecastSalesY2ManYen === fm.forecast.y2.sales &&
+    drivers.forecastSalesY3ManYen === fm.forecast.y3.sales;
+
+  const item10: ConsistencyCheckItem = {
+    id: 'chk-drivers-vs-sales',
+    category: 'ターゲット規模',
+    label: 'ターゲット規模 ↔ 売上高（客単価×客数の算定根拠反映チェック）',
+    documentSnippet:
+      isDriversPopulated && drivers
+        ? `単価${hv.newUnitPrice.value.toLocaleString()}円×Y3客数${hv.newCustomerCountY3.value.toLocaleString()}件 → 全社 ${drivers.forecastSalesY3ManYen.toLocaleString()}万円`
+        : '算定変数（客単価・客数）未入力',
+    financialValue: `収支計画 Y1:${fm.forecast.y1.sales.toLocaleString()} / Y2:${fm.forecast.y2.sales.toLocaleString()} / Y3:${fm.forecast.y3.sales.toLocaleString()}万円`,
+    status: !isDriversPopulated
+      ? 'unverified'
+      : isDriversReflected
+        ? 'match'
+        : 'mismatch',
+    note: !isDriversPopulated
+      ? 'ヒアリングシートの「新事業 客単価」「想定客数」を入力してください。'
+      : isDriversReflected
+        ? '客単価×想定客数による新事業売上算定根拠が将来1〜3年目の売上高計画へ正確に反映されています。'
+        : '算定根拠（単価×客数）の計算結果と収支計画の将来売上高が一致していません（算定結果の未反映または手動変更あり）。',
+  };
+
+  return [
+    item1,
+    item2,
+    item3,
+    item4,
+    item5,
+    item6,
+    item7,
+    item8,
+    item9,
+    item10,
+  ];
 }

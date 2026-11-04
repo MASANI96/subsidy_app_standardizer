@@ -1,6 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import { TEXT_MODULE_CATEGORIES } from '../data/initialData';
-import { Project, TextModule, TextModuleCategory } from '../types';
+import {
+  Project,
+  ReviewCriterion,
+  TextModule,
+  TextModuleCategory,
+} from '../types';
 import { interpolateTags } from '../utils/financialCalculations';
 
 interface ModulePickerModalProps {
@@ -10,6 +15,7 @@ interface ModulePickerModalProps {
   defaultLength?: 'all' | 'short' | 'long';
   project: Project;
   modules: TextModule[];
+  reviewCriteria?: ReviewCriterion[];
   onInsertText: (interpolatedText: string, mode: 'append' | 'replace') => void;
   onClose: () => void;
 }
@@ -37,6 +43,7 @@ export const ModulePickerModal: React.FC<ModulePickerModalProps> = ({
   defaultLength = 'all',
   project,
   modules,
+  reviewCriteria = [],
   onInsertText,
   onClose,
 }) => {
@@ -46,6 +53,15 @@ export const ModulePickerModal: React.FC<ModulePickerModalProps> = ({
   const [lengthFilter, setLengthFilter] = useState<'all' | 'short' | 'long'>(
     defaultLength
   );
+  const [criterionFilter, setCriterionFilter] = useState<string>('ALL');
+
+  const criteriaMap = useMemo(() => {
+    const map: Record<string, ReviewCriterion> = {};
+    reviewCriteria.forEach((rc) => {
+      map[rc.id] = rc;
+    });
+    return map;
+  }, [reviewCriteria]);
 
   const filteredModules = useMemo(() => {
     return modules.filter((m) => {
@@ -55,9 +71,15 @@ export const ModulePickerModal: React.FC<ModulePickerModalProps> = ({
       if (lengthFilter !== 'all' && m.lengthType !== lengthFilter) {
         return false;
       }
+      if (
+        criterionFilter !== 'ALL' &&
+        !(m.relatedCriteriaIds ?? []).includes(criterionFilter)
+      ) {
+        return false;
+      }
       return true;
     });
-  }, [modules, selectedCategory, lengthFilter]);
+  }, [modules, selectedCategory, lengthFilter, criterionFilter]);
 
   if (!isOpen) return null;
 
@@ -79,7 +101,8 @@ export const ModulePickerModal: React.FC<ModulePickerModalProps> = ({
               文章モジュールライブラリから挿入（収支マスター実数値へ自動置換）
             </h2>
             <p className="text-xs text-slate-600 mt-0.5">
-              挿入先セクション: <span className="font-semibold">{sectionTitle}</span> · 対象案件:{' '}
+              挿入先セクション:{' '}
+              <span className="font-semibold">{sectionTitle}</span> · 対象案件:{' '}
               <span className="font-semibold">{project.companyName}</span>
             </p>
           </div>
@@ -94,57 +117,79 @@ export const ModulePickerModal: React.FC<ModulePickerModalProps> = ({
         </div>
 
         {/* Filter Bar */}
-        <div className="px-6 py-3 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0 bg-white">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => setSelectedCategory('ALL')}
-              className={`px-2.5 py-1 text-xs font-medium border transition-colors cursor-pointer ${
-                selectedCategory === 'ALL'
-                  ? 'bg-slate-900 text-white border-slate-900'
-                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-              }`}
-            >
-              全カテゴリ
-            </button>
-            {TEXT_MODULE_CATEGORIES.map((cat) => (
+        <div className="px-6 py-3 border-b border-slate-200 flex flex-col gap-2.5 shrink-0 bg-white">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="flex flex-wrap items-center gap-1.5">
               <button
-                key={cat.id}
                 type="button"
-                onClick={() => setSelectedCategory(cat.id)}
-                className={`px-2.5 py-1 text-xs font-medium border transition-colors whitespace-nowrap cursor-pointer ${
-                  selectedCategory === cat.id
+                onClick={() => setSelectedCategory('ALL')}
+                className={`px-2.5 py-1 text-xs font-medium border transition-colors cursor-pointer ${
+                  selectedCategory === 'ALL'
                     ? 'bg-slate-900 text-white border-slate-900'
                     : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
                 }`}
               >
-                {cat.label}
+                全カテゴリ
               </button>
-            ))}
+              {TEXT_MODULE_CATEGORIES.map((cat) => (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setSelectedCategory(cat.id)}
+                  className={`px-2.5 py-1 text-xs font-medium border transition-colors whitespace-nowrap cursor-pointer ${
+                    selectedCategory === cat.id
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1 bg-slate-100 p-0.5 border border-slate-200 shrink-0">
+              {(
+                [
+                  { id: 'all', label: '全文字数' },
+                  { id: 'short', label: '短文（約200字）' },
+                  { id: 'long', label: '長文（約500字以上）' },
+                ] as const
+              ).map((lf) => (
+                <button
+                  key={lf.id}
+                  type="button"
+                  onClick={() => setLengthFilter(lf.id)}
+                  className={`px-2.5 py-1 text-xs font-medium whitespace-nowrap cursor-pointer ${
+                    lengthFilter === lf.id
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {lf.label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          <div className="flex items-center gap-1 bg-slate-100 p-0.5 border border-slate-200 shrink-0">
-            {(
-              [
-                { id: 'all', label: '全文字数' },
-                { id: 'short', label: '短文（約200字）' },
-                { id: 'long', label: '長文（約500字）' },
-              ] as const
-            ).map((lf) => (
-              <button
-                key={lf.id}
-                type="button"
-                onClick={() => setLengthFilter(lf.id)}
-                className={`px-2.5 py-1 text-xs font-medium whitespace-nowrap cursor-pointer ${
-                  lengthFilter === lf.id
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
+          {reviewCriteria.length > 0 && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-slate-600 font-medium whitespace-nowrap">
+                関連審査項目で絞込:
+              </span>
+              <select
+                value={criterionFilter}
+                onChange={(e) => setCriterionFilter(e.target.value)}
+                className="bg-slate-50 border border-slate-300 px-2.5 py-1 text-xs text-slate-900 focus:outline-none focus:border-slate-800"
               >
-                {lf.label}
-              </button>
-            ))}
-          </div>
+                <option value="ALL">すべての審査項目</option>
+                {reviewCriteria.map((rc) => (
+                  <option key={rc.id} value={rc.id}>
+                    [{rc.subsidyType}] {rc.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         {/* Module Cards List */}
@@ -156,6 +201,9 @@ export const ModulePickerModal: React.FC<ModulePickerModalProps> = ({
           ) : (
             filteredModules.map((mod) => {
               const interpolated = interpolateTags(mod.templateText, project);
+              const linkedCriteria = (mod.relatedCriteriaIds ?? [])
+                .map((cid) => criteriaMap[cid])
+                .filter(Boolean);
               return (
                 <div
                   key={mod.id}
@@ -167,12 +215,24 @@ export const ModulePickerModal: React.FC<ModulePickerModalProps> = ({
                         {mod.categoryLabel} ·{' '}
                         {mod.lengthType === 'short'
                           ? '短文（約200字）'
-                          : '長文（約500字）'}{' '}
+                          : '長文（約500字以上）'}{' '}
                         · 実数値置換後 {interpolated.length}文字
                       </div>
                       <h3 className="text-sm font-bold text-slate-900 mt-0.5">
                         {mod.title}
                       </h3>
+                      {linkedCriteria.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {linkedCriteria.map((rc) => (
+                            <span
+                              key={rc.id}
+                              className="px-1.5 py-0.5 text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200"
+                            >
+                              審査項目: {rc.name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">

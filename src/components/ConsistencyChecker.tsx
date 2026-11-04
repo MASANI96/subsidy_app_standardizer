@@ -3,17 +3,27 @@ import { AlertTriangle, Check, Info } from 'lucide-react';
 import { MANUAL_CHECK_DEFINITIONS, SUBSIDY_TYPES } from '../data/initialData';
 import {
   AICrossCheckResult,
+  EffectEstimateItem,
   Project,
   Role,
+  SubsidyRequirementThresholds,
   SubsidyType,
   WorkspaceTabId,
 } from '../types';
 import { buildConsistencyCheckItems } from '../utils/financialCalculations';
+import { canConfirmGate, canEdit } from '../utils/permissions';
+import {
+  ReadOnlyRoleBadge,
+  SpecTagBadge,
+  WorkspaceEffectBadge,
+} from './SpecTagBadge';
 
 interface ConsistencyCheckerProps {
   project: Project;
   role: Role;
+  thresholds: SubsidyRequirementThresholds;
   crossCheckPrompt: string;
+  effectEstimate?: EffectEstimateItem;
   onRunAICrossCheck: (
     projectId: string,
     subsidyType: SubsidyType
@@ -21,25 +31,27 @@ interface ConsistencyCheckerProps {
   onToggleManualCheck: (projectId: string, checkId: string) => void;
   onToggleGate3: (projectId: string, isPassed: boolean) => void;
   onNavigateTab: (tab: WorkspaceTabId) => void;
-  onNavigateAdminPrompt: () => void;
+  onNavigatePromptsScreen: () => void;
   onNotify: (message: string) => void;
 }
 
 const AUDIT_STEPS = [
-  '申請書全セクションから定量表現・金額を抽出中...',
-  '収支計画マスター（投資内訳・将来3ヶ年PL）と突合中...',
+  '申請書全セクションから定量表現・金額・雇用人数を抽出中...',
+  '収支計画マスター・算定根拠（単価×客数・設備内訳）と突合中...',
   '公募要件・審査減点リスクの監査レポートを生成中...',
 ];
 
 export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
   project,
   role,
+  thresholds,
   crossCheckPrompt,
+  effectEstimate,
   onRunAICrossCheck,
   onToggleManualCheck,
   onToggleGate3,
   onNavigateTab,
-  onNavigateAdminPrompt,
+  onNavigatePromptsScreen,
   onNotify,
 }) => {
   const [targetSubsidy, setTargetSubsidy] =
@@ -49,9 +61,12 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
   const [auditProgress, setAuditProgress] = useState(0);
   const [showPromptPreview, setShowPromptPreview] = useState(false);
 
+  const canEditConsistency = canEdit(role, 'consistency_edit');
+  const canConfirmG3 = canConfirmGate(role, 'gate-3');
+
   const checkItems = useMemo(
-    () => buildConsistencyCheckItems(project, targetSubsidy),
-    [project, targetSubsidy]
+    () => buildConsistencyCheckItems(project, targetSubsidy, thresholds),
+    [project, targetSubsidy, thresholds]
   );
 
   const summaryCounts = useMemo(() => {
@@ -74,6 +89,7 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
   const isGate3Passed = Boolean(gate3?.isPassed);
 
   const handleRunCrossCheck = () => {
+    if (!canEditConsistency) return;
     setIsRunningAudit(true);
     setAuditStepIndex(0);
     setAuditProgress(0.32);
@@ -108,13 +124,18 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
       {/* Header */}
       <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 border-b border-slate-200 pb-4">
         <div>
-          <p className="text-xs font-medium text-slate-500 mb-1">
-            ワークスペース タブ5 · 事業計画書（定性）× 収支計画書（定量）突合監査（ロール:{' '}
-            {role}）
-          </p>
+          <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500 mb-1">
+            <span>
+              ワークスペース タブ5 · 事業計画書（定性）× 収支計画書（定量）突合監査（ロール:{' '}
+              {role}）
+            </span>
+            <SpecTagBadge tag="指示書 4-⑤ / Step5" />
+            <SpecTagBadge tag="指示書 ゴール" />
+            <WorkspaceEffectBadge estimate={effectEstimate} />
+          </div>
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-              定性・定量 整合性チェック
+              定性・定量 整合性チェックリスト
             </h1>
             {isGate3Passed ? (
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 text-xs font-semibold text-emerald-900 bg-emerald-50 border border-emerald-300">
@@ -126,13 +147,14 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
                 Gate 3 未通過
               </span>
             )}
+            {!canEditConsistency && <ReadOnlyRoleBadge role={role} />}
           </div>
           <p className="text-xs text-slate-600 mt-1">
             対象案件:{' '}
             <span className="font-semibold text-slate-900">
               {project.companyName}
             </span>
-            {' · '}不採択の主要因となる「本文記載の金額・目標」と「収支計画表」の数値食い違いを提出前に完全排除します。
+            {' · '}不採択の主要因となる「本文記載の金額・雇用・設備・単価根拠」と「収支計画表」の数値食い違いを提出前に完全排除します。
           </p>
         </div>
 
@@ -155,12 +177,19 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
       </div>
 
       {/* SECTION 1: Automated Numerical Cross-Reference Table */}
-      <section className="bg-white border border-slate-200">
+      <section
+        data-guide-id="guide-consistency-table"
+        className="bg-white border border-slate-200"
+      >
         <div className="p-5 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <h2 className="text-base font-bold text-slate-900">
-              01. 自動数値突合テーブル（申請書本文 vs 収支計画マスター）
-            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900">
+                01. 自動数値突合テーブル（申請書本文・算定変数 vs 収支計画マスター）
+              </h2>
+              <SpecTagBadge tag="指示書 4-⑤" />
+              <SpecTagBadge tag="指示書 5" />
+            </div>
             <p className="text-xs text-slate-500 mt-0.5">
               突合結果: 完全一致{' '}
               <span className="font-mono tabular-nums font-bold text-emerald-800">
@@ -170,7 +199,7 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
               <span className="font-mono tabular-nums font-bold text-rose-700">
                 {summaryCounts.mismatchCount}件
               </span>{' '}
-              / 未記載・要補強{' '}
+              / 未記載・確認推奨{' '}
               <span className="font-mono tabular-nums font-bold text-slate-700">
                 {summaryCounts.unverifiedCount}件
               </span>
@@ -205,7 +234,7 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
               <tr className="bg-slate-100 border-b border-slate-200 text-xs font-semibold text-slate-700">
                 <th className="py-3 px-4 whitespace-nowrap">監査カテゴリ</th>
                 <th className="py-3 px-4 whitespace-nowrap">検証項目</th>
-                <th className="py-3 px-4">申請書本文中の記載抽出</th>
+                <th className="py-3 px-4">申請書・ヒアリング側の表記</th>
                 <th className="py-3 px-4">収支計画マスター確定値</th>
                 <th className="py-3 px-4 whitespace-nowrap">突合判定</th>
                 <th className="py-3 px-4">監査コメント・対応指針</th>
@@ -254,38 +283,46 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
       </section>
 
       {/* SECTION 2: AI Consistency Cross-Check Simulation */}
-      <section className="bg-white border border-slate-200 p-6 space-y-5">
+      <section
+        data-guide-id="guide-consistency-ai"
+        className="bg-white border border-slate-200 p-6 space-y-5"
+      >
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-4">
           <div className="space-y-1">
-            <h2 className="text-base font-bold text-slate-900">
-              02. AI整合性クロスチェック監査（2秒シミュレーション）
-            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900">
+                02. AI整合性クロスチェック監査（2秒シミュレーション）
+              </h2>
+              <SpecTagBadge tag="指示書 4-⑦" />
+            </div>
             <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
               <span>
-                管理者設定の監査プロンプトに基づき、論理矛盾・数値不整合を総合診断します。
+                整合性クロスチェック用プロンプトに基づき、論理矛盾・数値不整合を総合診断します。
               </span>
               <button
                 type="button"
                 onClick={() => setShowPromptPreview((p) => !p)}
                 className="text-slate-700 hover:text-slate-900 underline cursor-pointer"
               >
-                {showPromptPreview ? '監査プロンプトを隠す' : '適用中の監査プロンプトを確認'}
+                {showPromptPreview
+                  ? '監査プロンプトを隠す'
+                  : '適用中の監査プロンプトを確認'}
               </button>
               <button
                 type="button"
-                onClick={onNavigateAdminPrompt}
+                onClick={onNavigatePromptsScreen}
                 className="text-slate-700 hover:text-slate-900 underline cursor-pointer"
               >
-                プロンプト設定（画面4）→
+                生成AI用プロンプト集を開く →
               </button>
             </div>
           </div>
 
           <button
             type="button"
-            disabled={isRunningAudit}
+            disabled={isRunningAudit || !canEditConsistency}
             onClick={handleRunCrossCheck}
-            className="px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:bg-slate-600 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 disabled:text-slate-600 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             {isRunningAudit
               ? 'AIクロスチェック監査を実行中...'
@@ -414,18 +451,25 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
       </section>
 
       {/* SECTION 3: Manual Verification Checklist */}
-      <section className="bg-white border border-slate-200 p-6 space-y-5">
+      <section
+        data-guide-id="guide-consistency-manual"
+        className="bg-white border border-slate-200 p-6 space-y-5"
+      >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
           <div>
-            <h2 className="text-base font-bold text-slate-900">
-              03. 提出前 手動突合チェックリスト（証拠書類・実務確認）
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900">
+                03. 提出前 手動突合チェックリスト（証拠書類・最賃・実務確認）
+              </h2>
+              <SpecTagBadge tag="指示書 4-⑤" />
+            </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              システム自動突合では判定できない「添付見積書原本」「税理士確認」「交付決定スケジュール」の人間系チェック項目です（自動保存）。
+              添付見積書原本・事業場内最低賃金（地域別最賃＋30円以上）・税理士確認・交付決定スケジュール等の人間系チェック項目です（自動保存）。
             </p>
           </div>
           <div className="font-mono tabular-nums text-xs font-semibold text-slate-800">
-            確認完了: {completedManualCount} / {MANUAL_CHECK_DEFINITIONS.length} 項目
+            確認完了: {completedManualCount} / {MANUAL_CHECK_DEFINITIONS.length}{' '}
+            項目
           </div>
         </div>
 
@@ -435,15 +479,16 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
             return (
               <label
                 key={chk.id}
-                className={`flex items-start gap-3.5 p-4 cursor-pointer transition-colors ${
-                  checked ? 'bg-emerald-50/25' : 'bg-white hover:bg-slate-50'
-                }`}
+                className={`flex items-start gap-3.5 p-4 transition-colors ${
+                  canEditConsistency ? 'cursor-pointer' : 'cursor-not-allowed opacity-80'
+                } ${checked ? 'bg-emerald-50/25' : 'bg-white hover:bg-slate-50'}`}
               >
                 <input
                   type="checkbox"
+                  disabled={!canEditConsistency}
                   checked={checked}
                   onChange={() => onToggleManualCheck(project.id, chk.id)}
-                  className="mt-1 w-4 h-4 accent-slate-900 cursor-pointer shrink-0"
+                  className="mt-1 w-4 h-4 accent-slate-900 shrink-0"
                 />
                 <div className="space-y-1">
                   <div className="text-xs text-slate-500">{chk.category}</div>
@@ -467,6 +512,7 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
           </div>
           <button
             type="button"
+            disabled={!canConfirmG3}
             onClick={() => {
               const nextVal = !isGate3Passed;
               onToggleGate3(project.id, nextVal);
@@ -476,7 +522,7 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
                   : 'Gate 3を未通過に戻しました。'
               );
             }}
-            className={`px-5 py-2.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            className={`px-5 py-2.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 ${
               isGate3Passed
                 ? 'text-slate-800 bg-white border border-slate-300 hover:bg-slate-100'
                 : 'text-white bg-slate-900 hover:bg-slate-800'

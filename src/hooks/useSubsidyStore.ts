@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   buildMasterItemsFromTemplates,
   createGenericFinancialMaster,
+  createGenericHearingVariables,
   createInitialAppState,
   createStandardGates,
   createStandardScheduleTasks,
   createTechPrecisionSubsidies,
+  getSampleHearingVariablesForProject,
   SUBSIDY_TYPES,
   TECH_PRECISION_MASTER_IMPROVED_4,
   TECH_PRECISION_MASTER_PRESET,
@@ -13,26 +15,32 @@ import {
 import {
   AICrossCheckIssue,
   AICrossCheckResult,
+  CallRound,
   DiffLog,
   DocumentStatus,
+  EffectEstimateItem,
   FinancialPeriodKey,
   FinancialYearData,
   GanttTask,
   HearingMasterItem,
+  HearingVariables,
   InvestmentPlan,
   Project,
   ProjectStatus,
+  ReviewCriterion,
   Role,
   ScreenId,
   SubsidyAppState,
   SubsidyDocument,
   SubsidyRequirementThresholds,
+  SubsidySpecialFlags,
   SubsidyType,
   TextModule,
   WorkspaceTabId,
 } from '../types';
 import {
   buildConsistencyCheckItems,
+  calculateDriverEstimates,
   calculateNewDepreciationSchedule,
   evaluateSubsidyRequirements,
   interpolateTags,
@@ -40,7 +48,29 @@ import {
   recalculateYearData,
 } from '../utils/financialCalculations';
 
-const STORAGE_KEY = 'subsidy_standardization_mock_v2';
+export const STORAGE_KEY = 'subsidy_standardization_mock_v3';
+const LEGACY_STORAGE_KEY_V2 = 'subsidy_standardization_mock_v2';
+export const TOUR_SNAPSHOT_SESSION_KEY = 'subsidy_mock_tour_snapshot_v3';
+
+function isValidAppState(candidate: unknown): candidate is SubsidyAppState {
+  if (!candidate || typeof candidate !== 'object') return false;
+  const s = candidate as Partial<SubsidyAppState>;
+  return Boolean(
+    Array.isArray(s.projects) &&
+      s.projects.length > 0 &&
+      s.projects[0].financialMaster &&
+      s.projects[0].financialMaster.specialFlags &&
+      s.projects[0].hearingVariables &&
+      typeof s.projects[0].applicationDeadline === 'string' &&
+      Array.isArray(s.textModules) &&
+      Array.isArray(s.callRounds) &&
+      s.callRounds.length > 0 &&
+      typeof s.activeCallRoundId === 'string' &&
+      Array.isArray(s.effectEstimates) &&
+      s.thresholds &&
+      Array.isArray(s.thresholds.shinJigyo?.capTiers)
+  );
+}
 
 function formatNowTimestamp(): string {
   const now = new Date();
@@ -102,7 +132,7 @@ function buildDynamicSubsidiesFromMaster(
   const shin500_2 = `${m3} 従来工程では複数回の段取り作業や外部委託が発生していたが、本設備の導入により社内一貫体制へと抜本的に刷新される。これにより品質安定性の向上と納期遵守率100%を達成し、新規取引先が求める厳格な要求仕様に応える量産体制を確立する。`;
   const shin200_2 = `${m3}`;
 
-  const shin500_3 = `${m4} 本投資によるコスト構造改善と新規受注の積み上げにより、既存事業への依存から脱却した高収益体質へと転換を図る。${roiAppendix}`;
+  const shin500_3 = `${m4} 本投資によるコスト構造改善と新規受注の積み上げにより、既存事業への依存から脱却した高収益体質へと転換を図るとともに、専門人材の雇用・賃上げを推進する。${roiAppendix}`;
   const shin200_3 = `${m4}`;
 
   return {
@@ -175,12 +205,12 @@ function buildDynamicSubsidiesFromMaster(
           title: '2. 今回の取り組み内容',
           sourceMasterIds: ['master-2', 'master-3'],
           sourceMasterLabel: 'マスター② 課題背景 ＋ マスター③ 導入設備と販路開拓展開',
-          text200: `${m3} あわせて技術サンプル製作と専門展示会・Web広報を展開し新規顧客を開拓する。`,
+          text200: `${m3} あわせて技術サンプル製作と専門展示会・Web広報を展開し新規顧客の販路を開拓する。`,
           text500: `${shin500_2} さらに導入設備を活用した高付加価値サンプルの製作・展示会出展を通じ、新規取引先の開拓を強力に推進する。`,
-          customText: `${m3} あわせて技術サンプル製作と専門展示会・Web広報を展開し新規顧客を開拓する。`,
+          customText: `${m3} あわせて技術サンプル製作と専門展示会・Web広報を展開し新規顧客の販路を開拓する。`,
           selectedLength: '200',
-          currentText: `${m3} あわせて技術サンプル製作と専門展示会・Web広報を展開し新規顧客を開拓する。`,
-          aiBaselineText: `${m3} あわせて技術サンプル製作と専門展示会・Web広報を展開し新規顧客を開拓する。`,
+          currentText: `${m3} あわせて技術サンプル製作と専門展示会・Web広報を展開し新規顧客の販路を開拓する。`,
+          aiBaselineText: `${m3} あわせて技術サンプル製作と専門展示会・Web広報を展開し新規顧客の販路を開拓する。`,
           isModified: false,
         },
         {
@@ -223,10 +253,10 @@ function buildDynamicSubsidiesFromMaster(
           sourceMasterLabel: 'マスター③ 導入設備仕様・設置妥当性・見積根拠',
           text200: shin200_2,
           text500: shin500_2,
-          customText: `${m3} 設置スペース・電源環境および複数社相見積による価格妥当性を事前検証済みであり、速やかな稼働開始が可能である。`,
+          customText: `${m3} 都内工場への設置スペース・電源環境および複数社相見積による価格妥当性を事前検証済みであり、速やかな稼働開始が可能である。`,
           selectedLength: 'custom',
-          currentText: `${m3} 設置スペース・電源環境および複数社相見積による価格妥当性を事前検証済みであり、速やかな稼働開始が可能である。`,
-          aiBaselineText: `${m3} 設置スペース・電源環境および複数社相見積による価格妥当性を事前検証済みであり、速やかな稼働開始が可能である。`,
+          currentText: `${m3} 都内工場への設置スペース・電源環境および複数社相見積による価格妥当性を事前検証済みであり、速やかな稼働開始が可能である。`,
+          aiBaselineText: `${m3} 都内工場への設置スペース・電源環境および複数社相見積による価格妥当性を事前検証済みであり、速やかな稼働開始が可能である。`,
           isModified: false,
         },
         {
@@ -236,10 +266,10 @@ function buildDynamicSubsidiesFromMaster(
           sourceMasterLabel: 'マスター④ 都内サプライチェーン貢献・削減目標',
           text200: shin200_3,
           text500: shin500_3,
-          customText: `${m4} 都内サプライチェーンの高度化と高付加価値な内製基盤の確立に寄与する。${roiAppendix}`,
+          customText: `${m4} 都内サプライチェーンの高度化・周辺協力企業への波及と高付加価値な内製基盤強化に寄与する。${roiAppendix}`,
           selectedLength: 'custom',
-          currentText: `${m4} 都内サプライチェーンの高度化と高付加価値な内製基盤の確立に寄与する。${roiAppendix}`,
-          aiBaselineText: `${m4} 都内サプライチェーンの高度化と高付加価値な内製基盤の確立に寄与する。${roiAppendix}`,
+          currentText: `${m4} 都内サプライチェーンの高度化・周辺協力企業への波及と高付加価値な内製基盤強化に寄与する。${roiAppendix}`,
+          aiBaselineText: `${m4} 都内サプライチェーンの高度化・周辺協力企業への波及と高付加価値な内製基盤強化に寄与する。${roiAppendix}`,
           isModified: false,
         },
       ],
@@ -257,19 +287,31 @@ export interface NewProjectInput {
 }
 
 export function useSubsidyStore() {
+  const [restoredFromTourReload, setRestoredFromTourReload] = useState(false);
+
   const [state, setState] = useState<SubsidyAppState>(() => {
     try {
+      // 旧v2キーを削除（§5: 旧キーのデータは移行せず初期データで起動）
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY_V2);
+
+      // 4-B: ツアー中にリロードされた場合、sessionStorageのスナップショットを優先復元して削除
+      const tourSnapshotRaw = window.sessionStorage.getItem(
+        TOUR_SNAPSHOT_SESSION_KEY
+      );
+      if (tourSnapshotRaw) {
+        window.sessionStorage.removeItem(TOUR_SNAPSHOT_SESSION_KEY);
+        const parsedTour = JSON.parse(tourSnapshotRaw);
+        if (isValidAppState(parsedTour)) {
+          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(parsedTour));
+          setTimeout(() => setRestoredFromTourReload(true), 0);
+          return parsedTour;
+        }
+      }
+
       const saved = window.localStorage.getItem(STORAGE_KEY);
       if (saved) {
-        const parsed = JSON.parse(saved) as SubsidyAppState;
-        if (
-          parsed &&
-          Array.isArray(parsed.projects) &&
-          parsed.projects.length > 0 &&
-          parsed.projects[0].financialMaster &&
-          Array.isArray(parsed.textModules) &&
-          parsed.thresholds
-        ) {
+        const parsed = JSON.parse(saved);
+        if (isValidAppState(parsed)) {
           return parsed;
         }
       }
@@ -293,6 +335,28 @@ export function useSubsidyStore() {
       state.projects[0]
     );
   }, [state.projects, state.selectedProjectId]);
+
+  const activeCallRound = useMemo(() => {
+    return (
+      state.callRounds.find((r) => r.id === state.activeCallRoundId) ??
+      state.callRounds[0]
+    );
+  }, [state.callRounds, state.activeCallRoundId]);
+
+  // 4-B: デモツアー終了時の完全復元用
+  const replaceState = useCallback((nextState: SubsidyAppState) => {
+    const cloned = JSON.parse(JSON.stringify(nextState)) as SubsidyAppState;
+    setState(cloned);
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(cloned));
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  const clearRestoredTourFlag = useCallback(() => {
+    setRestoredFromTourReload(false);
+  }, []);
 
   const setRole = useCallback((role: Role) => {
     setState((prev) => ({ ...prev, role }));
@@ -331,6 +395,7 @@ export function useSubsidyStore() {
         ? input.targetAmount.trim()
         : `${Number(input.targetAmount.replace(/[^\d]/g, '') || 2000).toLocaleString()}万円`;
     const targetManYen = parseManYen(formattedAmount) || 2000;
+    const deadlineDate = input.deadline || '2026-12-25';
 
     setState((prev) => {
       const masterItems = buildMasterItemsFromTemplates(prev.masterTemplates);
@@ -349,8 +414,8 @@ export function useSubsidyStore() {
         });
       });
 
-      const estimatedMachinery = Math.round(targetManYen * 1.3);
-      const estimatedSystem = Math.round(targetManYen * 0.2);
+      const estimatedMachinery = Math.round(targetManYen * 1.6);
+      const estimatedSystem = Math.round(targetManYen * 0.4);
 
       const newProject: Project = {
         id: newId,
@@ -359,13 +424,36 @@ export function useSubsidyStore() {
         industry: input.industry.trim(),
         salesRep: input.salesRep.trim() || '田中 健太',
         writerName: input.writerName.trim() || '佐藤 美咲',
-        deadline: input.deadline || '2026-12-25',
+        deadline: deadlineDate,
+        applicationDeadline: deadlineDate,
         targetAmount: formattedAmount,
         targetAmountManYen: targetManYen,
         status: '未着手',
         rawHearingText: '',
         hearingSourceNote: '新規登録案件（議事録未取込）',
         masterItems,
+        hearingVariables: createGenericHearingVariables({
+          existingUnitPrice: 200000,
+          newUnitPrice: 300000,
+          countY1: 70,
+          countY2: 140,
+          countY3: 200, // 30万 × 200件 = 6,000万円
+          repeatRate: 80,
+          reducedHours: 800,
+          hourlyWage: 3200,
+          subcontractRed: 500,
+          defectCurr: 3.5,
+          defectTarget: 0.5,
+          ltCurr: 12,
+          ltTarget: 4,
+          capCurr: 250,
+          capTarget: 600,
+          hiresY1: 1,
+          hiresY2: 0,
+          hiresY3: 1,
+          wageGrowth: 3.8,
+          memoPrefix: '新規登録初期値',
+        }),
         subsidies: emptySubsidies,
         financialMaster: createGenericFinancialMaster({
           baseSales: 25000,
@@ -408,11 +496,7 @@ export function useSubsidyStore() {
 
   // ガントチャートタスクのステータス更新
   const updateTaskStatus = useCallback(
-    (
-      projectId: string,
-      taskId: string,
-      status: GanttTask['status']
-    ) => {
+    (projectId: string, taskId: string, status: GanttTask['status']) => {
       const now = formatNowTimestamp();
       setState((prev) => ({
         ...prev,
@@ -423,7 +507,6 @@ export function useSubsidyStore() {
             t.id === taskId ? { ...t, status } : t
           );
 
-          // Gate 3 / Gate 4 タスク完了連動（Gate 2は収支ロックと連動）
           let nextGates = p.gates;
           if (targetTask?.gateId && targetTask.gateId !== 'gate-2') {
             const passed = status === 'completed';
@@ -446,7 +529,7 @@ export function useSubsidyStore() {
     []
   );
 
-  // Gate 1 / Gate 3 / Gate 4 の通過更新
+  // Gate 1〜4 の通過更新
   const setGatePassed = useCallback(
     (
       projectId: string,
@@ -465,7 +548,12 @@ export function useSubsidyStore() {
           );
           const nextTasks = p.scheduleTasks.map((t) =>
             t.gateId === gateId
-              ? { ...t, status: isPassed ? ('completed' as const) : ('in_progress' as const) }
+              ? {
+                  ...t,
+                  status: isPassed
+                    ? ('completed' as const)
+                    : ('in_progress' as const),
+                }
               : t
           );
           const nextFinancialMaster =
@@ -512,6 +600,41 @@ export function useSubsidyStore() {
     },
     []
   );
+
+  // M1: ヒアリング算定変数の更新
+  const updateHearingVariables = useCallback(
+    (projectId: string, nextVariables: HearingVariables) => {
+      const now = formatNowTimestamp();
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) =>
+          p.id === projectId
+            ? { ...p, hearingVariables: nextVariables, updatedAt: now }
+            : p
+        ),
+      }));
+    },
+    []
+  );
+
+  // M1: ヒアリングシート（Excel）取込シミュレーション
+  const importSampleHearingSheetExcel = useCallback((projectId: string) => {
+    const now = formatNowTimestamp();
+    setState((prev) => ({
+      ...prev,
+      projects: prev.projects.map((p) => {
+        if (p.id !== projectId) return p;
+        const sampleVars = getSampleHearingVariablesForProject(projectId);
+        return {
+          ...p,
+          hearingVariables: sampleVars,
+          hearingSourceNote: `共通ヒアリングシート取込: マスターヒアリングシート_${p.companyName}.xlsx`,
+          status: p.status === '未着手' ? 'ヒアリング中' : p.status,
+          updatedAt: now,
+        };
+      }),
+    }));
+  }, []);
 
   const generateMasterFromHearing = useCallback((projectId: string) => {
     const now = formatNowTimestamp();
@@ -611,7 +734,9 @@ export function useSubsidyStore() {
         : target.status;
 
       const nextGates = target.gates.map((g) =>
-        g.id === 'gate-1' ? { ...g, isPassed: true, passedAt: g.passedAt ?? now } : g
+        g.id === 'gate-1'
+          ? { ...g, isPassed: true, passedAt: g.passedAt ?? now }
+          : g
       );
       const nextTasks = target.scheduleTasks.map((t) =>
         t.id === 'task-2' || t.id === 'task-3'
@@ -728,7 +853,73 @@ export function useSubsidyStore() {
     });
   }, []);
 
-  // 財務マスターの各期フィールド更新（粗利・営業利益・付加価値額を即時再計算）
+  // M2: 算定結果（直前期売上＋新事業売上）を将来3ヶ年計画へ反映
+  const applyHearingDriversToForecast = useCallback((projectId: string) => {
+    const now = formatNowTimestamp();
+    setState((prev) => ({
+      ...prev,
+      projects: prev.projects.map((p) => {
+        if (p.id !== projectId) return p;
+        const fm = p.financialMaster;
+        if (fm.status === 'locked') return p;
+        const drivers = calculateDriverEstimates(
+          p.hearingVariables,
+          fm.historical.yMinus1.sales
+        );
+
+        const nextForecast = {
+          y1: recalculateYearData({
+            ...fm.forecast.y1,
+            sales: drivers.forecastSalesY1ManYen,
+          }),
+          y2: recalculateYearData({
+            ...fm.forecast.y2,
+            sales: drivers.forecastSalesY2ManYen,
+          }),
+          y3: recalculateYearData({
+            ...fm.forecast.y3,
+            sales: drivers.forecastSalesY3ManYen,
+          }),
+        };
+
+        return {
+          ...p,
+          financialMaster: {
+            ...fm,
+            forecast: nextForecast,
+          },
+          updatedAt: now,
+        };
+      }),
+    }));
+  }, []);
+
+  // M8: 案件ごとの特例フラグ更新
+  const updateSpecialFlags = useCallback(
+    (projectId: string, flagUpdates: Partial<SubsidySpecialFlags>) => {
+      const now = formatNowTimestamp();
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) => {
+          if (p.id !== projectId) return p;
+          return {
+            ...p,
+            financialMaster: {
+              ...p.financialMaster,
+              specialFlags: {
+                ...p.financialMaster.specialFlags,
+                ...flagUpdates,
+              },
+            },
+            updatedAt: now,
+          };
+        }),
+      }));
+    },
+    []
+  );
+
+  // 財務マスターの各期フィールド更新
   const updateFinancialField = useCallback(
     (
       projectId: string,
@@ -756,7 +947,6 @@ export function useSubsidyStore() {
               [period]: updatedYear,
             };
 
-            // 直前期の既存減価償却費が変更された場合、将来3ヶ年の減価償却費も投資償却分と連動再計算
             let nextForecast = fm.forecast;
             if (period === 'yMinus1' && field === 'depreciation') {
               const newDep = calculateNewDepreciationSchedule(
@@ -813,7 +1003,7 @@ export function useSubsidyStore() {
     []
   );
 
-  // 投資計画・減価償却方式・耐用年数の更新（将来減価償却費＆付加価値額を即時再計算）
+  // 投資計画・減価償却方式・耐用年数の更新
   const updateInvestmentPlan = useCallback(
     (projectId: string, investmentUpdates: Partial<InvestmentPlan>) => {
       const now = formatNowTimestamp();
@@ -1062,7 +1252,6 @@ export function useSubsidyStore() {
     []
   );
 
-  // 本文中の未置換タグ {...} を最新収支数値で一括置換
   const replaceTagsInSubsidyDocument = useCallback(
     (projectId: string, subsidyType: SubsidyType) => {
       setState((prev) => ({
@@ -1260,7 +1449,7 @@ export function useSubsidyStore() {
     }));
   }, []);
 
-  // AI整合性クロスチェック実行アクション
+  // AI整合性クロスチェック実行アクション（M7・M8対応）
   const runAICrossCheck = useCallback(
     (
       projectId: string,
@@ -1273,10 +1462,19 @@ export function useSubsidyStore() {
         const target = prev.projects.find((p) => p.id === projectId);
         if (!target) return prev;
 
-        const checkItems = buildConsistencyCheckItems(target, subsidyType);
+        const currentRound =
+          prev.callRounds.find((r) => r.id === prev.activeCallRoundId) ??
+          prev.callRounds[0];
+        const activeThresholds = currentRound?.thresholds ?? prev.thresholds;
+
+        const checkItems = buildConsistencyCheckItems(
+          target,
+          subsidyType,
+          activeThresholds
+        );
         const reqEval = evaluateSubsidyRequirements(
           target.financialMaster,
-          prev.thresholds
+          activeThresholds
         );
 
         const issues: AICrossCheckIssue[] = [];
@@ -1299,9 +1497,8 @@ export function useSubsidyStore() {
               severity: 'error',
               targetSection: `${subsidyType} · ${item.category}`,
               title: `数値不整合の検出: ${item.label}`,
-              description: `申請書側「${item.documentSnippet}」に対し、収支計画マスターは「${item.financialValue}」となっています。`,
-              recommendation:
-                '申請書エディタで数値を修正するか、文章モジュールの変数タグ置換を実行して収支計画と完全一致させてください。',
+              description: `抽出値「${item.documentSnippet}」に対し、収支計画マスターは「${item.financialValue}」となっています。`,
+              recommendation: item.note,
             });
           } else if (item.status === 'unverified') {
             issues.push({
@@ -1318,11 +1515,34 @@ export function useSubsidyStore() {
           issues.push({
             severity: 'error',
             targetSection: '収支計画マスター · 公募要件',
-            title: `付加価値額の年率伸び率（${reqEval.vaGrowthAnnual}%）が目標値（${prev.thresholds.shinJigyo.valueAddedGrowthRateAnnual}%）未満`,
+            title: `付加価値額の年平均成長率（${reqEval.vaGrowthAnnual}%）が目標値（${activeThresholds.shinJigyo.valueAddedGrowthRateAnnual}%）未満`,
             description:
-              '新事業進出補助金の基本要件を満たしていません。このままでは形式不備・不採択となる可能性が極めて高い状態です。',
+              '新事業進出補助金の付加価値額成長率要件を満たしていません。このままでは形式不備・不採択となる可能性が極めて高い状態です。',
             recommendation:
               '将来3年目（Y3）の営業利益または人件費計画を見直し、付加価値額伸び率を引き上げてください。',
+          });
+        }
+
+        if (!reqEval.shinJigyo.isWagePassed) {
+          issues.push({
+            severity: 'error',
+            targetSection: '収支計画マスター · 賃上げ要件',
+            title: `一人当たり給与支給総額の年平均成長率（${reqEval.perCapitaWageGrowthAnnual}%）が要件（${reqEval.shinJigyo.targetPerCapitaWageGrowth}%）未満`,
+            description:
+              '一人当たり給与支給総額の年平均成長率が現行公募回の基準を下回っています。',
+            recommendation:
+              '将来3年目（Y3）の給与支給総額または採用計画を見直し、一人当たり賃上げ率を満たしてください。',
+          });
+        }
+
+        if (!reqEval.shinJigyo.isMinSubsidyPassed) {
+          issues.push({
+            severity: 'error',
+            targetSection: '収支計画マスター · 補助下限要件',
+            title: `補助金額が下限（${reqEval.shinJigyo.minSubsidyAmount.toLocaleString()}万円）を下回っています`,
+            description: `新事業進出補助金の下限額（${reqEval.shinJigyo.minSubsidyAmount.toLocaleString()}万円）に対し、申請希望額または換算額が不足しています。`,
+            recommendation:
+              '投資対象設備の範囲を見直すか、小規模事業者持続化補助金・東京都助成事業を主軸に検討してください。',
           });
         }
 
@@ -1330,11 +1550,11 @@ export function useSubsidyStore() {
           issues.push({
             severity: 'info',
             targetSection: '全セクション横断監査',
-            title: '定性ストーリーと定量収支計画の完全整合を確認',
+            title: '定性ストーリー・算定変数・定量収支計画の完全整合を確認',
             description:
-              '投資総額・内訳・3年後売上目標・営業利益率・投資回収年数・従業員体制のすべてが収支計画マスターと矛盾なく一致しています。',
+              '投資総額・内訳・算定根拠（単価×客数）・3年後売上目標・営業利益率・投資回収年数・人員および賃上げ計画のすべてが矛盾なく一致しています。',
             recommendation:
-              'このまま顧客最終確認（Week 7）および電子申請（Gate 4）工程へ進行可能です。',
+              'このまま顧客最終確認（W7）および電子申請（Gate 4）工程へ進行可能です。',
           });
         }
 
@@ -1342,7 +1562,7 @@ export function useSubsidyStore() {
         const warnCount = issues.filter((i) => i.severity === 'warning').length;
         const overallScore = Math.max(
           35,
-          Math.min(100, 100 - errorCount * 22 - warnCount * 6)
+          Math.min(100, 100 - errorCount * 20 - warnCount * 6)
         );
         const isPass = errorCount === 0 && overallScore >= 80;
 
@@ -1352,7 +1572,7 @@ export function useSubsidyStore() {
           isPass,
           summary: isPass
             ? `監査スコア ${overallScore}点：重大な数値矛盾は検出されませんでした（軽微な補強提案 ${warnCount}件）。Gate 3（整合性チェック）通過基準を満たしています。`
-            : `監査スコア ${overallScore}点：修正が必要な数値矛盾が ${errorCount}件、確認推奨事項が ${warnCount}件検出されました。提出前に必ず解消してください。`,
+            : `監査スコア ${overallScore}点：修正が必要な数値矛盾・要件未達が ${errorCount}件、確認推奨事項が ${warnCount}件検出されました。提出前に必ず解消してください。`,
           issues,
         };
 
@@ -1519,12 +1739,149 @@ export function useSubsidyStore() {
     });
   }, []);
 
-  // 公募要件しきい値設定の更新
+  // R3: 公募回の切替・複製・編集・削除・しきい値更新
+  const setActiveCallRound = useCallback((roundId: string) => {
+    setState((prev) => {
+      const target = prev.callRounds.find((r) => r.id === roundId);
+      if (!target) return prev;
+      return {
+        ...prev,
+        activeCallRoundId: roundId,
+        thresholds: JSON.parse(
+          JSON.stringify(target.thresholds)
+        ) as SubsidyRequirementThresholds,
+      };
+    });
+  }, []);
+
+  const duplicateCallRound = useCallback((sourceRoundId: string): string => {
+    const newId = `round-${Date.now()}`;
+    setState((prev) => {
+      const src =
+        prev.callRounds.find((r) => r.id === sourceRoundId) ??
+        prev.callRounds[0];
+      if (!src) return prev;
+      const cloned: CallRound = {
+        ...(JSON.parse(JSON.stringify(src)) as CallRound),
+        id: newId,
+        name: `${src.name}（複製）`,
+        effectiveDate: new Date().toISOString().slice(0, 10),
+      };
+      return {
+        ...prev,
+        callRounds: [cloned, ...prev.callRounds],
+      };
+    });
+    return newId;
+  }, []);
+
+  const updateCallRound = useCallback(
+    (
+      roundId: string,
+      updates: Partial<
+        Pick<
+          CallRound,
+          | 'name'
+          | 'effectiveDate'
+          | 'memo'
+          | 'thresholds'
+          | 'sectionCharLimits'
+          | 'reviewCriteria'
+          | 'generationPrompts'
+        >
+      >
+    ) => {
+      setState((prev) => {
+        const nextRounds = prev.callRounds.map((r) =>
+          r.id === roundId ? { ...r, ...updates } : r
+        );
+        const updatedActive = nextRounds.find(
+          (r) => r.id === prev.activeCallRoundId
+        );
+        return {
+          ...prev,
+          callRounds: nextRounds,
+          thresholds: updatedActive
+            ? (JSON.parse(
+                JSON.stringify(updatedActive.thresholds)
+              ) as SubsidyRequirementThresholds)
+            : prev.thresholds,
+        };
+      });
+    },
+    []
+  );
+
+  const deleteCallRound = useCallback((roundId: string) => {
+    setState((prev) => {
+      if (roundId === prev.activeCallRoundId || prev.callRounds.length <= 1) {
+        return prev;
+      }
+      return {
+        ...prev,
+        callRounds: prev.callRounds.filter((r) => r.id !== roundId),
+      };
+    });
+  }, []);
+
+  // 現在有効な公募回のしきい値更新（既存互換＋R3連動）
   const updateThresholds = useCallback(
-    (thresholds: SubsidyRequirementThresholds) => {
+    (thresholds: SubsidyRequirementThresholds, targetRoundId?: string) => {
+      setState((prev) => {
+        const rid = targetRoundId ?? prev.activeCallRoundId;
+        const nextRounds = prev.callRounds.map((r) =>
+          r.id === rid ? { ...r, thresholds } : r
+        );
+        return {
+          ...prev,
+          callRounds: nextRounds,
+          thresholds:
+            rid === prev.activeCallRoundId ? thresholds : prev.thresholds,
+        };
+      });
+    },
+    []
+  );
+
+  // R2: 審査項目CRUD（公募回単位）
+  const updateReviewCriteriaForRound = useCallback(
+    (roundId: string, reviewCriteria: ReviewCriterion[]) => {
       setState((prev) => ({
         ...prev,
-        thresholds,
+        callRounds: prev.callRounds.map((r) =>
+          r.id === roundId ? { ...r, reviewCriteria } : r
+        ),
+      }));
+    },
+    []
+  );
+
+  // M5: 文章生成プロンプト更新（公募回単位）
+  const updateGenerationPrompt = useCallback(
+    (roundId: string, promptId: string, promptText: string) => {
+      setState((prev) => ({
+        ...prev,
+        callRounds: prev.callRounds.map((r) =>
+          r.id === roundId
+            ? {
+                ...r,
+                generationPrompts: r.generationPrompts.map((gp) =>
+                  gp.id === promptId ? { ...gp, promptText } : gp
+                ),
+              }
+            : r
+        ),
+      }));
+    },
+    []
+  );
+
+  // W2: 導入効果試算マスタの更新
+  const updateEffectEstimates = useCallback(
+    (effectEstimates: EffectEstimateItem[]) => {
+      setState((prev) => ({
+        ...prev,
+        effectEstimates,
       }));
     },
     []
@@ -1538,6 +1895,7 @@ export function useSubsidyStore() {
     }));
   }, []);
 
+  // §5: resetAllDataではUI状態（subsidy_mock_ui_v3）は消さない
   const resetAllData = useCallback(() => {
     try {
       window.localStorage.removeItem(STORAGE_KEY);
@@ -1550,6 +1908,10 @@ export function useSubsidyStore() {
   return {
     state,
     selectedProject,
+    activeCallRound,
+    restoredFromTourReload,
+    clearRestoredTourFlag,
+    replaceState,
     setRole,
     setActiveScreen,
     setWorkspaceTab,
@@ -1559,9 +1921,13 @@ export function useSubsidyStore() {
     updateTaskStatus,
     setGatePassed,
     updateRawHearingText,
+    updateHearingVariables,
+    importSampleHearingSheetExcel,
     generateMasterFromHearing,
     saveMasterItem,
     syncMasterToSubsidies,
+    applyHearingDriversToForecast,
+    updateSpecialFlags,
     updateFinancialField,
     updateInvestmentPlan,
     lockFinancialPlan,
@@ -1582,7 +1948,14 @@ export function useSubsidyStore() {
     deleteMasterTemplate,
     moveMasterTemplate,
     applyPromptImprovementSuggestion,
+    setActiveCallRound,
+    duplicateCallRound,
+    updateCallRound,
+    deleteCallRound,
     updateThresholds,
+    updateReviewCriteriaForRound,
+    updateGenerationPrompt,
+    updateEffectEstimates,
     updateCrossCheckPrompt,
     resetAllData,
   };

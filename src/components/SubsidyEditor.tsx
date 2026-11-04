@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
-import { Lock } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Check, Lock } from 'lucide-react';
 import { DOCUMENT_STATUS_LIST, SUBSIDY_TYPES } from '../data/initialData';
 import {
+  CallRound,
   DocumentStatus,
+  EffectEstimateItem,
   Project,
   Role,
   SubsidySection,
@@ -11,13 +13,28 @@ import {
   TextModuleCategory,
 } from '../types';
 import { interpolateTags } from '../utils/financialCalculations';
+import { canEdit } from '../utils/permissions';
 import { DiffViewer } from './DiffViewer';
 import { ModulePickerModal } from './ModulePickerModal';
+import {
+  ReadOnlyRoleBadge,
+  SpecTagBadge,
+  WorkspaceEffectBadge,
+} from './SpecTagBadge';
+
+export interface EditorExternalTarget {
+  subsidyType: SubsidyType;
+  sectionId?: string;
+  nonce: number;
+}
 
 interface SubsidyEditorProps {
   project: Project;
   role: Role;
   textModules: TextModule[];
+  activeCallRound: CallRound;
+  effectEstimate?: EffectEstimateItem;
+  externalTarget?: EditorExternalTarget | null;
   onUpdateSectionLength: (
     projectId: string,
     subsidyType: SubsidyType,
@@ -72,14 +89,89 @@ const SUBSIDY_META: Record<
   東京都経営強化基盤事業: {
     subtitle: '都内基盤強化・設備導入の妥当性と経費根拠を補強',
     guideline:
-      '推奨文字数: 各項目 約300〜400字（大田区等の地域サプライチェーン維持・相見積妥当性を明記）',
+      '推奨文字数: 各項目 約350〜400字（都内サプライチェーン維持・相見積妥当性を明記）',
   },
 };
+
+function evaluateCharLimitStatus(
+  currentLen: number,
+  selectedLength: '200' | '500' | 'custom',
+  customLimit: number
+): {
+  targetChars: number;
+  isMinimumRule: boolean;
+  ratioPct: number;
+  status: 'shortage' | 'optimal' | 'over';
+  label: string;
+} {
+  if (selectedLength === '500') {
+    const target = 500;
+    const ratioPct = Math.min(100, Math.round((currentLen / target) * 100));
+    if (currentLen < target * 0.8) {
+      return {
+        targetChars: target,
+        isMinimumRule: true,
+        ratioPct,
+        status: 'shortage',
+        label: `不足（推奨${target}字以上まであと${target - currentLen}文字）`,
+      };
+    }
+    if (currentLen < target) {
+      return {
+        targetChars: target,
+        isMinimumRule: true,
+        ratioPct,
+        status: 'shortage',
+        label: `やや不足（推奨${target}字以上まであと${target - currentLen}文字）`,
+      };
+    }
+    return {
+      targetChars: target,
+      isMinimumRule: true,
+      ratioPct: 100,
+      status: 'optimal',
+      label: `適正（推奨${target}字以上を達成）`,
+    };
+  }
+
+  const target = selectedLength === '200' ? 200 : customLimit || 400;
+  const rawRatio = target > 0 ? (currentLen / target) * 100 : 100;
+  const ratioPct = Math.min(100, Math.round(rawRatio));
+
+  if (currentLen > target) {
+    return {
+      targetChars: target,
+      isMinimumRule: false,
+      ratioPct: 100,
+      status: 'over',
+      label: `超過（+${currentLen - target}文字 / 上限${target}字）`,
+    };
+  }
+  if (rawRatio < 80) {
+    return {
+      targetChars: target,
+      isMinimumRule: false,
+      ratioPct,
+      status: 'shortage',
+      label: `不足（指定${target}字の80%未満・残り${target - currentLen}文字）`,
+    };
+  }
+  return {
+    targetChars: target,
+    isMinimumRule: false,
+    ratioPct,
+    status: 'optimal',
+    label: `適正（80〜100%圏内 / 上限${target}字）`,
+  };
+}
 
 export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
   project,
   role,
   textModules,
+  activeCallRound,
+  effectEstimate,
+  externalTarget,
   onUpdateSectionLength,
   onRegenerateSection,
   onUpdateSectionText,
@@ -111,7 +203,29 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
   const [pickerTargetSection, setPickerTargetSection] =
     useState<SubsidySection | null>(null);
 
+  const canEditDoc = canEdit(role, 'editor_edit');
   const isFinancialLocked = project.financialMaster.status === 'locked';
+
+  // M4: マッピング表のセルクリック等からの遷移対応
+  useEffect(() => {
+    if (!externalTarget) return;
+    setSelectedSubsidy(externalTarget.subsidyType);
+    if (externalTarget.sectionId && isFinancialLocked) {
+      window.setTimeout(() => {
+        const el = document.getElementById(
+          `editor-section-${externalTarget.sectionId}`
+        );
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('guide-highlight-active');
+          window.setTimeout(() => {
+            el.classList.remove('guide-highlight-active');
+          }, 2000);
+        }
+      }, 180);
+    }
+  }, [externalTarget, isFinancialLocked]);
+
   const currentDoc = project.subsidies[selectedSubsidy];
   const modifiedCount = currentDoc.sections.filter((s) => s.isModified).length;
 
@@ -121,9 +235,13 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
       <div className="space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 border-b border-slate-200 pb-4">
           <div>
-            <p className="text-xs font-medium text-slate-500 mb-1">
-              ワークスペース タブ4 · 申請書マッピング・仕上げ工程（ロール: {role}）
-            </p>
+            <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500 mb-1">
+              <span>
+                ワークスペース タブ4 · 申請書マッピング・仕上げ工程（ロール: {role}）
+              </span>
+              <SpecTagBadge tag="指示書 Step6" />
+              <WorkspaceEffectBadge estimate={effectEstimate} />
+            </div>
             <h1 className="text-2xl font-bold tracking-tight text-slate-900">
               補助金別申請書 作成・編集
             </h1>
@@ -138,7 +256,10 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
         </div>
 
         {/* Full-Screen Strict Gate 2 Blocker */}
-        <div className="bg-white border-2 border-amber-400 p-10 md:p-14 text-center space-y-6">
+        <div
+          data-guide-id="guide-editor-blocker"
+          className="bg-white border-2 border-amber-400 p-10 md:p-14 text-center space-y-6"
+        >
           <div className="mx-auto w-14 h-14 bg-amber-50 border border-amber-300 flex items-center justify-center text-amber-800">
             <Lock className="w-7 h-7" />
           </div>
@@ -151,7 +272,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
               【フェーズゲート未達】収支計画（数値）が確定していません。
             </h2>
             <p className="text-sm text-slate-700 leading-relaxed">
-              手戻りを防止するため、先に『タブ3: 収支計画マスター』で数値を確定してください。
+              手戻りを防止するため、先に『タブ3: 収支計画マスター計算シート』で数値を確定してください。
               <br />
               収支計画マスターにて投資内訳・減価償却・付加価値額伸び率要件を確認し、「この収支計画で確定する（Gate 2 通過）」を実行すると、本エディタでの執筆・文章モジュール挿入・AI再生成がすべてアンロックされます。
             </p>
@@ -172,19 +293,22 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
             <div>
               <span className="block text-slate-400">現在の総投資額案</span>
               <span className="font-mono tabular-nums font-semibold text-slate-800">
-                {project.financialMaster.investment.totalInvestment.toLocaleString()} 万円
+                {project.financialMaster.investment.totalInvestment.toLocaleString()}{' '}
+                万円
               </span>
             </div>
             <div>
               <span className="block text-slate-400">補助金申請希望額</span>
               <span className="font-mono tabular-nums font-semibold text-slate-800">
-                {project.financialMaster.investment.subsidyRequested.toLocaleString()} 万円
+                {project.financialMaster.investment.subsidyRequested.toLocaleString()}{' '}
+                万円
               </span>
             </div>
             <div>
               <span className="block text-slate-400">3年後売上目標案</span>
               <span className="font-mono tabular-nums font-semibold text-slate-800">
-                {project.financialMaster.forecast.y3.sales.toLocaleString()} 万円
+                {project.financialMaster.forecast.y3.sales.toLocaleString()}{' '}
+                万円
               </span>
             </div>
           </div>
@@ -204,6 +328,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
   };
 
   const handleRegenerateClick = (section: SubsidySection) => {
+    if (!canEditDoc) return;
     setRegeneratingIds((prev) => ({ ...prev, [section.id]: true }));
     window.setTimeout(() => {
       onRegenerateSection(project.id, selectedSubsidy, section.id);
@@ -213,12 +338,13 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
           ? '短文（約200字）'
           : section.selectedLength === '500'
             ? '長文（約500字以上）'
-            : '自由記述（標準ボリューム）';
+            : '指定文字数（標準ボリューム）';
       onNotify(`「${section.title}」を${lengthLabel}設定で再生成しました。`);
     }, 800);
   };
 
   const handleInsertSampleHumanEdit = (section: SubsidySection) => {
+    if (!canEditDoc) return;
     const templateAppendix =
       'なお、総投資額{設備投資額}（機械装置{機械装置費}・システム{システム費}）に対する投資回収期間は年間キャッシュフロー増加額約{年間CF増加額}ベースで約{回収年数}と試算しており、3年後売上増{売上増加額}（全社{3年後売上}）の達成確度は高い。';
     const interpolated = interpolateTags(templateAppendix, project);
@@ -239,6 +365,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
   };
 
   const handleSave = (explicitStatus?: DocumentStatus) => {
+    if (!canEditDoc) return;
     const count = onSaveDocument(project.id, selectedSubsidy, explicitStatus);
     const nowStr = new Date().toLocaleTimeString('ja-JP', {
       hour: '2-digit',
@@ -263,12 +390,21 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
       {/* Screen Header */}
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 border-b border-slate-200 pb-4">
         <div>
-          <p className="text-xs font-medium text-slate-500 mb-1">
-            ワークスペース タブ4 · Gate 2 収支確定済（{project.financialMaster.lockedAt}） · ロール: {role}
-          </p>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            補助金別申請書 作成・編集
-          </h1>
+          <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500 mb-1">
+            <span>
+              ワークスペース タブ4 · Gate 2 収支確定済（
+              {project.financialMaster.lockedAt}） · ロール: {role}
+            </span>
+            <SpecTagBadge tag="指示書 4-④ / Step5" />
+            <SpecTagBadge tag="指示書 ゴール" />
+            <WorkspaceEffectBadge estimate={effectEstimate} />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+              補助金別申請書 作成・編集
+            </h1>
+            {!canEditDoc && <ReadOnlyRoleBadge role={role} />}
+          </div>
           <p className="text-xs text-slate-600 mt-1">
             対象案件:{' '}
             <span className="font-semibold text-slate-900">
@@ -276,7 +412,8 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
             </span>
             {' · '}総投資額:{' '}
             <span className="font-mono tabular-nums font-semibold">
-              {project.financialMaster.investment.totalInvestment.toLocaleString()}万円
+              {project.financialMaster.investment.totalInvestment.toLocaleString()}
+              万円
             </span>
             {' · '}3年後売上目標:{' '}
             <span className="font-mono tabular-nums font-semibold">
@@ -288,13 +425,15 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            data-guide-id="guide-editor-tags"
+            disabled={!canEditDoc}
             onClick={() => {
               onReplaceAllTagsInDoc(project.id, selectedSubsidy);
               onNotify(
                 `${selectedSubsidy}内の変数タグ {...} を最新の収支マスター数値へ一括置換しました。`
               );
             }}
-            className="px-3.5 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="px-3.5 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             本文中の変数タグを収支数値へ再置換
           </button>
@@ -309,7 +448,10 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
       </div>
 
       {/* 1. Subsidy Switching Tabs */}
-      <div className="grid grid-cols-1 md:grid-cols-3 border border-slate-200 bg-white divide-y md:divide-y-0 md:divide-x divide-slate-200">
+      <div
+        data-guide-id="guide-editor-subsidy-tabs"
+        className="grid grid-cols-1 md:grid-cols-3 border border-slate-200 bg-white divide-y md:divide-y-0 md:divide-x divide-slate-200"
+      >
         {SUBSIDY_TYPES.map((st) => {
           const isActive = selectedSubsidy === st;
           const doc = project.subsidies[st];
@@ -359,7 +501,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
       <div className="bg-white border border-slate-200 px-5 py-3.5 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
         <div className="space-y-0.5">
           <div className="text-xs font-semibold text-slate-900">
-            選択様式: {selectedSubsidy}
+            選択様式: {selectedSubsidy}（適用公募回: {activeCallRound.name}）
           </div>
           <div className="text-xs text-slate-500">
             {SUBSIDY_META[selectedSubsidy].guideline}
@@ -376,6 +518,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
             </label>
             <select
               id="subsidy-doc-status"
+              disabled={!canEditDoc}
               value={currentDoc.status}
               onChange={(e) => {
                 const next = e.target.value as DocumentStatus;
@@ -384,7 +527,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
                   `${selectedSubsidy}のステータスを「${next}」に更新しました。`
                 );
               }}
-              className="bg-slate-50 border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-900 focus:outline-none focus:border-slate-800"
+              className="bg-slate-50 border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-900 disabled:opacity-60 focus:outline-none focus:border-slate-800"
             >
               {DOCUMENT_STATUS_LIST.map((ds) => (
                 <option key={ds} value={ds}>
@@ -397,8 +540,9 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
           {currentDoc.status !== '完成' && (
             <button
               type="button"
+              disabled={!canEditDoc}
               onClick={() => handleSave('完成')}
-              className="px-3.5 py-1.5 text-xs font-semibold text-emerald-900 bg-emerald-50 border border-emerald-300 hover:bg-emerald-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="px-3.5 py-1.5 text-xs font-semibold text-emerald-900 bg-emerald-50 border border-emerald-300 hover:bg-emerald-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               保存してステータスを「完成」にする
             </button>
@@ -440,8 +584,24 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
             section.sourceMasterIds.includes(m.id)
           );
 
+          const customCharLimit =
+            activeCallRound.sectionCharLimits[section.id] ?? 400;
+          const charEval = evaluateCharLimitStatus(
+            section.currentText.length,
+            section.selectedLength,
+            customCharLimit
+          );
+
+          // R2: このセクションに対応する審査項目とキーワード照合
+          const sectionCriteria = activeCallRound.reviewCriteria.filter(
+            (rc) =>
+              rc.subsidyType === selectedSubsidy &&
+              rc.targetSectionIds.includes(section.id)
+          );
+
           return (
             <section
+              id={`editor-section-${section.id}`}
               key={section.id}
               className="bg-white border border-slate-200 p-6 space-y-4"
             >
@@ -487,8 +647,12 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
+                    data-guide-id={
+                      idx === 0 ? 'guide-editor-module' : undefined
+                    }
+                    disabled={!canEditDoc}
                     onClick={() => setPickerTargetSection(section)}
-                    className="px-3 py-1.5 text-xs font-semibold text-slate-900 bg-amber-50 border border-amber-300 hover:bg-amber-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    className="px-3 py-1.5 text-xs font-semibold text-slate-900 bg-amber-50 border border-amber-300 hover:bg-amber-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                   >
                     + 文章モジュールから挿入
                   </button>
@@ -501,6 +665,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
                   </label>
                   <select
                     id={`len-${section.id}`}
+                    disabled={!canEditDoc}
                     value={section.selectedLength}
                     onChange={(e) =>
                       onUpdateSectionLength(
@@ -510,16 +675,18 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
                         e.target.value as '200' | '500' | 'custom'
                       )
                     }
-                    className="bg-slate-50 border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-900 focus:outline-none focus:border-slate-800"
+                    className="bg-slate-50 border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-900 disabled:opacity-60 focus:outline-none focus:border-slate-800"
                   >
-                    <option value="200">短文（約200字）</option>
-                    <option value="500">長文（約500字以上）</option>
-                    <option value="custom">自由記述</option>
+                    <option value="200">短文（上限 200字）</option>
+                    <option value="500">長文（推奨 500字以上）</option>
+                    <option value="custom">
+                      様式指定（上限 {customCharLimit}字）
+                    </option>
                   </select>
 
                   <button
                     type="button"
-                    disabled={isRegenerating}
+                    disabled={isRegenerating || !canEditDoc}
                     onClick={() => handleRegenerateClick(section)}
                     className="px-3.5 py-1.5 text-xs font-semibold text-slate-900 bg-slate-100 border border-slate-300 hover:bg-slate-200 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                   >
@@ -553,6 +720,60 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
                 </div>
               )}
 
+              {/* R2: Review Criteria Coverage Strip */}
+              {sectionCriteria.length > 0 && (
+                <div
+                  data-guide-id={
+                    idx === 0 ? 'guide-editor-criteria' : undefined
+                  }
+                  className="bg-slate-50 border border-slate-200 px-3.5 py-2.5 space-y-2"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-slate-800">
+                        このセクションで触れるべき審査項目
+                      </span>
+                      <SpecTagBadge tag="指示書 5" />
+                    </div>
+                    <span className="text-[11px] text-slate-500">
+                      参考（公募要領にて要確認）
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {sectionCriteria.map((rc) => {
+                      const matchedKeywords = rc.keywords.filter((kw) =>
+                        section.currentText.includes(kw)
+                      );
+                      const isCovered = matchedKeywords.length > 0;
+                      return (
+                        <div
+                          key={rc.id}
+                          title={`${rc.description}（照合語: ${rc.keywords.join('・')}）`}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs border ${
+                            isCovered
+                              ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                              : 'bg-amber-50/70 border-amber-300 text-amber-950'
+                          }`}
+                        >
+                          {isCovered ? (
+                            <Check className="w-3 h-3 text-emerald-800 shrink-0" />
+                          ) : null}
+                          <span className="font-semibold">
+                            {rc.isBonus ? `[加点] ${rc.name}` : rc.name}:
+                          </span>
+                          <span>
+                            {isCovered
+                              ? '記載あり✓'
+                              : `未記載（例: ${rc.keywords.slice(0, 2).join('・')}）`}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {isRegenerating ? (
                 <div className="border border-slate-200 bg-slate-50 p-6 space-y-2.5">
                   <div className="text-xs font-semibold text-slate-700">
@@ -563,9 +784,10 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
                   <div className="h-3 bg-slate-200 w-4/5" />
                 </div>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <textarea
                     rows={section.selectedLength === '200' ? 4 : 6}
+                    disabled={!canEditDoc}
                     value={section.currentText}
                     onChange={(e) =>
                       onUpdateSectionText(
@@ -576,72 +798,115 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
                       )
                     }
                     placeholder="マスター情報または「+ 文章モジュールから挿入」で文面を展開できます。{設備投資額} 等の変数タグも使用可能です。"
-                    className="w-full border border-slate-300 p-3.5 text-sm leading-relaxed text-slate-900 focus:outline-none focus:border-slate-800"
+                    className="w-full border border-slate-300 p-3.5 text-sm leading-relaxed text-slate-900 disabled:bg-slate-50 focus:outline-none focus:border-slate-800"
                   />
 
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
-                    <div className="flex flex-wrap items-center gap-3">
-                      {idx === 2 && (
-                        <button
-                          type="button"
-                          onClick={() => handleInsertSampleHumanEdit(section)}
-                          className="text-slate-700 hover:text-slate-900 underline cursor-pointer"
-                        >
-                          + 回収年数・売上内訳の加筆例を追記（収支マスター連動）
-                        </button>
-                      )}
-                      {section.currentText.includes('{') && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const replaced = interpolateTags(
-                              section.currentText,
-                              project
-                            );
-                            onUpdateSectionText(
-                              project.id,
-                              selectedSubsidy,
-                              section.id,
-                              replaced
-                            );
-                            onNotify(
-                              `「${section.title}」内の変数タグを収支実数値へ置換しました。`
-                            );
-                          }}
-                          className="text-amber-800 font-semibold hover:underline cursor-pointer"
-                        >
-                          未置換の変数タグ {'{...}'} を今すぐ実数値化
-                        </button>
-                      )}
-                      {section.isModified && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setOpenDiffPreviewIds((prev) => ({
-                              ...prev,
-                              [section.id]: !prev[section.id],
-                            }))
-                          }
-                          className="text-slate-800 font-medium hover:text-slate-950 underline cursor-pointer"
-                        >
-                          {showInlineDiff
-                            ? 'AI元文面との比較を隠す'
-                            : 'AI元文面との差分をプレビュー'}
-                        </button>
-                      )}
+                  {/* M6: Character Count Gauge & Status Bar */}
+                  <div
+                    data-guide-id={
+                      idx === 0 ? 'guide-editor-charlimit' : undefined
+                    }
+                    className="border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 space-y-2"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono tabular-nums text-slate-800">
+                          現在{' '}
+                          <strong className="text-sm text-slate-950">
+                            {section.currentText.length}
+                          </strong>{' '}
+                          / 指定{' '}
+                          {charEval.isMinimumRule
+                            ? `${charEval.targetChars}字以上`
+                            : `${charEval.targetChars}字`}
+                        </span>
+                        <span className="text-slate-400">
+                          （AI基準: {section.aiBaselineText.length}文字）
+                        </span>
+                      </div>
+
+                      <span
+                        className={`px-2 py-0.5 text-xs font-semibold border ${
+                          charEval.status === 'optimal'
+                            ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                            : charEval.status === 'over'
+                              ? 'bg-rose-50 text-rose-900 border-rose-300'
+                              : 'bg-amber-50 text-amber-900 border-amber-300'
+                        }`}
+                      >
+                        {charEval.label}
+                      </span>
                     </div>
 
-                    <div className="font-mono tabular-nums text-slate-700">
-                      現在文字数:{' '}
-                      <span className="font-bold text-slate-900">
-                        {section.currentText.length}
-                      </span>{' '}
-                      文字（AI基準: {section.aiBaselineText.length} 文字）
+                    <div className="w-full h-1.5 bg-slate-200 overflow-hidden">
+                      <div
+                        className={`h-full transition-all ${
+                          charEval.status === 'optimal'
+                            ? 'bg-emerald-700'
+                            : charEval.status === 'over'
+                              ? 'bg-rose-700'
+                              : 'bg-amber-600'
+                        }`}
+                        style={{ width: `${charEval.ratioPct}%` }}
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 pt-0.5">
+                      <div className="flex flex-wrap items-center gap-3">
+                        {idx === 2 && canEditDoc && (
+                          <button
+                            type="button"
+                            onClick={() => handleInsertSampleHumanEdit(section)}
+                            className="text-slate-700 hover:text-slate-900 underline cursor-pointer"
+                          >
+                            + 回収年数・売上内訳の加筆例を追記（収支マスター連動）
+                          </button>
+                        )}
+                        {section.currentText.includes('{') && canEditDoc && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const replaced = interpolateTags(
+                                section.currentText,
+                                project
+                              );
+                              onUpdateSectionText(
+                                project.id,
+                                selectedSubsidy,
+                                section.id,
+                                replaced
+                              );
+                              onNotify(
+                                `「${section.title}」内の変数タグを収支実数値へ置換しました。`
+                              );
+                            }}
+                            className="text-amber-800 font-semibold hover:underline cursor-pointer"
+                          >
+                            未置換の変数タグ {'{...}'} を今すぐ実数値化
+                          </button>
+                        )}
+                        {section.isModified && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOpenDiffPreviewIds((prev) => ({
+                                ...prev,
+                                [section.id]: !prev[section.id],
+                              }))
+                            }
+                            className="text-slate-800 font-medium hover:text-slate-950 underline cursor-pointer"
+                          >
+                            {showInlineDiff
+                              ? 'AI元文面との比較を隠す'
+                              : 'AI元文面との差分をプレビュー'}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
 
                   {showInlineDiff && section.isModified && (
-                    <div className="pt-2">
+                    <div className="pt-1">
                       <DiffViewer
                         aiText={section.aiBaselineText}
                         humanText={section.currentText}
@@ -657,15 +922,21 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
       </div>
 
       {/* Bottom Save & Diff Record Action Bar */}
-      <div className="bg-white border border-slate-300 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div
+        data-guide-id="guide-editor-save"
+        className="bg-white border border-slate-300 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+      >
         <div className="space-y-1">
-          <div className="text-sm font-bold text-slate-900">
-            {selectedSubsidy} の編集内容を確定・保存
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-bold text-slate-900">
+              {selectedSubsidy} の編集内容を確定・保存
+            </span>
+            <SpecTagBadge tag="指示書 Step7" />
           </div>
           <p className="text-xs text-slate-600">
             {modifiedCount > 0
               ? `現在 ${modifiedCount} 項目に加筆・モジュール挿入があります。保存するとAI初期文面との差分（Diff）が自動蓄積されます。`
-              : '保存後、「05. 整合性チェック」タブで本文数値と収支計画マスターの完全一致を検証してください。'}
+              : '保存後、「05. 整合性チェックリスト」タブで本文数値と収支計画マスターの完全一致を検証してください。'}
           </p>
         </div>
 
@@ -673,16 +944,18 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
           {currentDoc.status !== '完成' && (
             <button
               type="button"
+              disabled={!canEditDoc}
               onClick={() => handleSave('完成')}
-              className="px-4 py-2.5 text-xs font-semibold text-emerald-900 bg-emerald-50 border border-emerald-300 hover:bg-emerald-100 transition-colors whitespace-nowrap cursor-pointer"
+              className="px-4 py-2.5 text-xs font-semibold text-emerald-900 bg-emerald-50 border border-emerald-300 hover:bg-emerald-100 disabled:opacity-50 transition-colors whitespace-nowrap cursor-pointer"
             >
               完成として保存
             </button>
           )}
           <button
             type="button"
+            disabled={!canEditDoc}
             onClick={() => handleSave()}
-            className="px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
+            className="px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-50 transition-colors whitespace-nowrap cursor-pointer"
           >
             この内容で申請書を保存
           </button>
@@ -709,6 +982,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
           }
           project={project}
           modules={textModules}
+          reviewCriteria={activeCallRound.reviewCriteria}
           onInsertText={(interpolatedText, mode) => {
             const nextText =
               mode === 'replace' || !pickerTargetSection.currentText.trim()
