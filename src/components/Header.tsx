@@ -1,6 +1,14 @@
 import React, { useState } from 'react';
-import { Calendar, Lock, Play } from 'lucide-react';
-import { CallRound, Project, Role, ScreenId, WorkspaceTabId } from '../types';
+import { Calendar, Layers, Lock, RotateCcw } from 'lucide-react';
+import {
+  DisplayCurrencyUnit,
+  Project,
+  Role,
+  RoundingMode,
+  ScreenId,
+  SubsidyVersionRound,
+  WorkspaceTabId,
+} from '../types';
 
 interface HeaderProps {
   role: Role;
@@ -8,23 +16,24 @@ interface HeaderProps {
   workspaceTab: WorkspaceTabId;
   projects: Project[];
   selectedProject: Project;
-  activeCallRound: CallRound;
+  activeCallRound: SubsidyVersionRound;
+  displayCurrencyUnit: DisplayCurrencyUnit;
+  roundingMode: RoundingMode;
   onChangeRole: (role: Role) => void;
   onChangeScreen: (screen: ScreenId) => void;
   onChangeWorkspaceTab: (tab: WorkspaceTabId) => void;
   onSelectProject: (projectId: string) => void;
+  onChangeDisplayCurrencyUnit: (unit: DisplayCurrencyUnit) => void;
+  onChangeRoundingMode: (mode: RoundingMode) => void;
   onNavigateCallRoundAdmin: () => void;
-  onStartDemoTour: () => void;
   onResetAll: () => void;
 }
 
 const NAV_ITEMS: { id: ScreenId; label: string }[] = [
   { id: 'projects', label: '01. 案件一覧・台帳' },
   { id: 'workspace', label: '02. 案件ワークスペース' },
-  { id: 'library', label: '03. 文章モジュールライブラリ' },
-  { id: 'mapping', label: '04. マッピング表' },
-  { id: 'prompts', label: '05. 生成AI用プロンプト集' },
-  { id: 'admin', label: '06. 管理者設定' },
+  { id: 'prompts', label: '03. 生成AIプロンプト' },
+  { id: 'admin', label: '04. 管理者設定' },
 ];
 
 const ROLES: Role[] = ['営業担当', '書類作成者', 'システム管理者'];
@@ -36,24 +45,28 @@ export const Header: React.FC<HeaderProps> = ({
   projects,
   selectedProject,
   activeCallRound,
+  displayCurrencyUnit,
+  roundingMode,
   onChangeRole,
   onChangeScreen,
   onChangeWorkspaceTab,
   onSelectProject,
+  onChangeDisplayCurrencyUnit,
+  onChangeRoundingMode,
   onNavigateCallRoundAdmin,
-  onStartDemoTour,
   onResetAll,
 }) => {
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
 
   const gate1Passed = Boolean(
-    selectedProject.gates.find((g) => g.id === 'gate-1')?.isPassed
+    selectedProject.gates?.find((g) => g.id === 'gate-1')?.isPassed
   );
-  const gate2Locked = selectedProject.financialMaster.status === 'locked';
+  const gate2Locked = selectedProject.financialMaster?.status === 'locked';
   const gate3Passed = Boolean(
-    selectedProject.gates.find((g) => g.id === 'gate-3')?.isPassed
+    selectedProject.gates?.find((g) => g.id === 'gate-3')?.isPassed
   );
-  const passedGateCount = selectedProject.gates.filter((g) => g.isPassed).length;
+  const passedGateCount =
+    selectedProject.gates?.filter((g) => g.isPassed).length || 0;
 
   const workspaceTabs: {
     id: WorkspaceTabId;
@@ -69,17 +82,17 @@ export const Header: React.FC<HeaderProps> = ({
     {
       id: 'hearing',
       label: '02. マスターヒアリングシート',
-      statusText: gate1Passed ? 'Gate1済' : '未確定',
+      statusText: gate1Passed ? 'Gate1済' : '進行中',
     },
     {
       id: 'financial',
-      label: '03. 収支計画マスター計算シート',
-      statusText: gate2Locked ? 'Gate2済' : '要確定',
+      label: '03. 収支計画マスター計算シート（公式フォーマット準拠）',
+      statusText: gate2Locked ? '確定ロック済' : '要確定',
     },
     {
       id: 'editor',
       label: '04. 申請書 作成・編集',
-      statusText: gate2Locked ? '編集可' : 'ロック中',
+      statusText: gate2Locked ? '編集可' : '収支未確定',
       isLocked: !gate2Locked,
     },
     {
@@ -92,18 +105,23 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <>
       {/* Top Global Navigation Bar */}
-      <header className="sticky top-0 z-30 flex items-center justify-between gap-4 bg-slate-900 px-5 py-3 text-white border-b border-slate-800">
+      <header className="sticky top-0 z-30 flex items-center justify-between gap-4 bg-slate-900 px-5 py-2.5 text-white border-b border-slate-800">
         {/* Zone 1: Brand Title */}
-        <button
-          type="button"
-          onClick={() => onChangeScreen('projects')}
-          className="text-sm xl:text-base font-bold tracking-tight text-white hover:text-slate-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer text-left"
-        >
-          補助金申請標準化システム
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => onChangeScreen('projects')}
+            className="text-sm xl:text-base font-bold tracking-tight text-white hover:text-slate-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer text-left"
+          >
+            新事業進出・ものづくり補助金申請支援システム
+          </button>
+          <span className="text-[10px] px-2 py-0.5 bg-slate-800 text-slate-300 border border-slate-700">
+            叩き台モック ver1.3
+          </span>
+        </div>
 
-        {/* Zone 2: 6 Single-line Navigation Links */}
-        <nav className="hidden xl:flex items-center gap-5 text-xs font-medium">
+        {/* Zone 2: Navigation Links */}
+        <nav className="hidden lg:flex items-center gap-4 text-xs font-medium">
           {NAV_ITEMS.map((item) => {
             const isActive = activeScreen === item.id;
             return (
@@ -123,64 +141,87 @@ export const Header: React.FC<HeaderProps> = ({
           })}
         </nav>
 
-        {/* Zone 3: Quick Demo Tour & Reset Action */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={onStartDemoTour}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-900 bg-white hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <Play className="w-3 h-3 fill-slate-900" />
-            <span>デモツアー（約5分）</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setConfirmResetOpen(true)}
-            className="px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 border border-slate-700 hover:bg-slate-700 hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            データを初期状態にリセット
-          </button>
-        </div>
-      </header>
-
-      {/* Workspace Context, Call Round & Role Switching Toolbar */}
-      <div className="bg-white border-b border-slate-200 px-5 py-2.5">
-        <div className="max-w-[1440px] mx-auto flex flex-col gap-2.5">
-          {/* Tablet / Compact Laptop Screen Switcher */}
-          <div className="flex xl:hidden items-center gap-1 overflow-x-auto pb-1.5 border-b border-slate-100">
-            {NAV_ITEMS.map((item) => {
-              const isActive = activeScreen === item.id;
+        {/* Zone 3: Unit Switching, Rounding & Reset */}
+        <div className="flex items-center gap-3 shrink-0">
+          {/* 金額表示単位切替（円 / 千円 / 万円） */}
+          <div className="flex items-center gap-1 bg-slate-800 px-2 py-1 border border-slate-700">
+            <span className="text-[11px] text-slate-400 whitespace-nowrap font-medium">
+              表示単位:
+            </span>
+            {(['yen', 'thousandYen', 'manYen'] as DisplayCurrencyUnit[]).map((u) => {
+              const active = displayCurrencyUnit === u;
+              const labels: Record<DisplayCurrencyUnit, string> = {
+                yen: '円',
+                thousandYen: '千円',
+                manYen: '万円',
+              };
               return (
                 <button
-                  key={item.id}
+                  key={u}
                   type="button"
-                  onClick={() => onChangeScreen(item.id)}
-                  className={`px-2.5 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer ${
-                    isActive
-                      ? 'bg-slate-900 text-white'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  onClick={() => onChangeDisplayCurrencyUnit(u)}
+                  className={`px-1.5 py-0.5 text-xs font-semibold cursor-pointer transition-colors ${
+                    active
+                      ? 'bg-blue-600 text-white'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-700'
                   }`}
                 >
-                  {item.label}
+                  {labels[u]}
                 </button>
               );
             })}
           </div>
 
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2.5">
-            {/* Left: Active Case Context + Active Call Round */}
-            <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-600">
-              <label
-                htmlFor="global-project-select"
-                className="font-semibold text-slate-700 whitespace-nowrap"
-              >
-                作業対象案件:
+          {/* 端数処理（切り捨て / 四捨五入） */}
+          <div className="flex items-center gap-1 bg-slate-800 px-2 py-1 border border-slate-700">
+            <span className="text-[11px] text-slate-400 whitespace-nowrap font-medium">
+              端数:
+            </span>
+            {(['floor', 'round'] as RoundingMode[]).map((m) => {
+              const active = roundingMode === m;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => onChangeRoundingMode(m)}
+                  className={`px-1.5 py-0.5 text-xs font-semibold cursor-pointer transition-colors ${
+                    active
+                      ? 'bg-slate-600 text-white'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-700'
+                  }`}
+                >
+                  {m === 'floor' ? '切捨' : '四捨五入'}
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setConfirmResetOpen(true)}
+            title="データを初期プリセット状態にリセット"
+            className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-300 bg-slate-800 border border-slate-700 hover:bg-slate-700 hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <RotateCcw className="w-3 h-3 text-slate-400" />
+            <span>リセット</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Workspace Context Toolbar */}
+      <div className="bg-white border-b border-slate-200 px-5 py-2">
+        <div className="max-w-[1600px] mx-auto flex flex-col md:flex-row md:items-center md:justify-between gap-2.5">
+          {/* Left: Active Project + Version Round + Track */}
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-700">
+            <div className="flex items-center gap-1.5">
+              <label htmlFor="global-project-select" className="font-semibold text-slate-800">
+                作業案件:
               </label>
               <select
                 id="global-project-select"
                 value={selectedProject.id}
                 onChange={(e) => onSelectProject(e.target.value)}
-                className="bg-slate-50 border border-slate-300 text-slate-900 text-xs font-medium px-2.5 py-1 focus:outline-none focus:border-slate-800"
+                className="bg-slate-50 border border-slate-300 text-slate-900 text-xs font-semibold px-2 py-1 focus:outline-none focus:border-slate-800"
               >
                 {projects.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -188,54 +229,57 @@ export const Header: React.FC<HeaderProps> = ({
                   </option>
                 ))}
               </select>
-
-              {/* Active Call Round Indicator (R3) */}
-              <button
-                type="button"
-                data-guide-id="guide-header-round"
-                onClick={onNavigateCallRoundAdmin}
-                title="クリックして公募回・要件しきい値管理を開く"
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 border border-slate-300 text-[11px] font-medium text-slate-800 hover:bg-slate-200 transition-colors whitespace-nowrap cursor-pointer"
-              >
-                <Calendar className="w-3 h-3 text-slate-600 shrink-0" />
-                <span>適用公募回: {activeCallRound.name}</span>
-              </button>
-
-              <span className="hidden 2xl:inline text-slate-600 whitespace-nowrap">
-                営業: {selectedProject.salesRep} / 作成: {selectedProject.writerName} / 申請締切:{' '}
-                <span className="font-mono tabular-nums font-semibold text-slate-800">
-                  {selectedProject.applicationDeadline}
-                </span>
-              </span>
             </div>
 
-            {/* Right: Role Switcher */}
-            <div
-              data-guide-id="guide-header-role"
-              className="flex items-center gap-2 shrink-0 self-start lg:self-auto"
+            {/* 公募回（版）インジケーター */}
+            <button
+              type="button"
+              onClick={onNavigateCallRoundAdmin}
+              title="クリックして公募回・版管理画面を開く"
+              className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 border border-blue-200 text-[11px] font-semibold text-blue-800 hover:bg-blue-100 transition-colors cursor-pointer"
             >
-              <span className="text-xs text-slate-500 whitespace-nowrap">
-                操作ロール:
+              <Calendar className="w-3 h-3 text-blue-600 shrink-0" />
+              <span>適用公募回版: {activeCallRound.versionCode}</span>
+            </button>
+
+            {/* 枠インジケーター */}
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 border border-slate-200 text-[11px] font-medium text-slate-700">
+              <Layers className="w-3 h-3 text-slate-500 shrink-0" />
+              <span>
+                適用枠:{' '}
+                {activeCallRound.tracks.find(
+                  (t) => t.id === selectedProject.financialMaster.appliedTrackId
+                )?.name || '新事業進出枠'}
               </span>
-              <div className="flex items-center bg-slate-100 p-0.5 border border-slate-200">
-                {ROLES.map((r) => {
-                  const active = role === r;
-                  return (
-                    <button
-                      key={r}
-                      type="button"
-                      onClick={() => onChangeRole(r)}
-                      className={`px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                        active
-                          ? 'bg-slate-900 text-white'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {r}
-                    </button>
-                  );
-                })}
-              </div>
+            </span>
+
+            <span className="text-slate-500 hidden xl:inline">
+              営業: {selectedProject.salesRep} / 作成: {selectedProject.writerName} / 締切:{' '}
+              <span className="font-mono tabular-nums font-semibold text-slate-800">
+                {selectedProject.deadline}
+              </span>
+            </span>
+          </div>
+
+          {/* Right: Role Switcher */}
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-xs text-slate-500 whitespace-nowrap">操作ロール:</span>
+            <div className="flex items-center bg-slate-100 p-0.5 border border-slate-200">
+              {ROLES.map((r) => {
+                const active = role === r;
+                return (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => onChangeRole(r)}
+                    className={`px-2 py-0.5 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                      active ? 'bg-slate-900 text-white' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {r}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -243,8 +287,8 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Workspace 5-Tab Sub-Navigation Bar */}
       {activeScreen === 'workspace' && (
-        <div className="bg-slate-100/80 border-b border-slate-200 px-5">
-          <div className="max-w-[1440px] mx-auto flex items-center gap-1 overflow-x-auto pt-2">
+        <div className="bg-slate-100/90 border-b border-slate-200 px-5">
+          <div className="max-w-[1600px] mx-auto flex items-center gap-1 overflow-x-auto pt-2">
             {workspaceTabs.map((tab) => {
               const isActive = workspaceTab === tab.id;
               return (
@@ -252,19 +296,15 @@ export const Header: React.FC<HeaderProps> = ({
                   key={tab.id}
                   type="button"
                   onClick={() => onChangeWorkspaceTab(tab.id)}
-                  className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold border-t border-x transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold border-t border-x transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                     isActive
-                      ? 'bg-white border-slate-200 text-slate-900 -mb-px pb-[9px]'
+                      ? 'bg-white border-slate-300 text-slate-900 -mb-px pb-[9px] shadow-xs'
                       : 'bg-transparent border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-200/50'
                   }`}
                 >
-                  {tab.isLocked && (
-                    <Lock className="w-3.5 h-3.5 text-amber-700 shrink-0" />
-                  )}
+                  {tab.isLocked && <Lock className="w-3.5 h-3.5 text-amber-700 shrink-0" />}
                   <span>{tab.label}</span>
-                  <span className="text-slate-300" aria-hidden="true">
-                    /
-                  </span>
+                  <span className="text-slate-300">/</span>
                   <span
                     className={`font-mono tabular-nums text-[11px] font-medium ${
                       tab.isLocked
@@ -283,29 +323,23 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       )}
 
-      {/* Inline Reset Confirmation Modal */}
+      {/* Reset Confirmation Dialog */}
       {confirmResetOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="reset-dialog-title"
         >
-          <div className="w-full max-w-md bg-white border border-slate-300 p-6 shadow-lg">
-            <h2
-              id="reset-dialog-title"
-              className="text-base font-bold text-slate-900 mb-2"
-            >
-              システム状態の初期化確認
-            </h2>
+          <div className="w-full max-w-md bg-white border border-slate-300 p-6 shadow-xl">
+            <h2 className="text-base font-bold text-slate-900 mb-2">初期データリセット確認</h2>
             <p className="text-sm text-slate-600 leading-relaxed mb-6">
-              ブラウザに保存されている案件追加・収支計画編集・フェーズゲート確定・モジュール変更・差異ログをすべて破棄し、デモ開始時の初期プリセット状態に復元します（操作ガイドの確認状況は保持されます）。よろしいですか？
+              ブラウザに保存された編集内容を破棄し、初期プリセット状態（株式会社○○ 1社、公募回ver1.3）に復元します。よろしいですか？
             </p>
             <div className="flex items-center justify-end gap-3">
               <button
                 type="button"
                 onClick={() => setConfirmResetOpen(false)}
-                className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 transition-colors whitespace-nowrap cursor-pointer"
+                className="px-4 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 cursor-pointer"
               >
                 キャンセル
               </button>
@@ -315,9 +349,9 @@ export const Header: React.FC<HeaderProps> = ({
                   onResetAll();
                   setConfirmResetOpen(false);
                 }}
-                className="px-4 py-2 text-xs font-semibold text-white bg-rose-700 hover:bg-rose-800 transition-colors whitespace-nowrap cursor-pointer"
+                className="px-4 py-1.5 text-xs font-semibold text-white bg-rose-700 hover:bg-rose-800 cursor-pointer"
               >
-                初期状態にリセット実行
+                リセット実行
               </button>
             </div>
           </div>

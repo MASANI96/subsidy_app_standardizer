@@ -1,1691 +1,1636 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, Check, Lock, Unlock } from 'lucide-react';
-import { SUBSIDY_TYPES } from '../data/initialData';
-import { computeMappedExpenseRows } from '../data/subsidyFormatMapping';
 import {
-  CallRound,
-  DepreciationMethod,
-  EffectEstimateItem,
-  FinancialPeriodKey,
-  FinancialYearData,
-  HearingVariables,
-  InvestmentPlan,
+  AlertCircle,
+  AlertTriangle,
+  Building,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Info,
+  Lock,
+  PieChart,
+  Scale,
+  Settings,
+  Unlock,
+} from 'lucide-react';
+import {
+  AnnualSalesEstimateMethod,
+  DisplayCurrencyUnit,
+  EmployeeCountMethod,
+  PeriodKey,
+  PlanningYearsOption,
   Project,
   Role,
-  SubsidyRequirementThresholds,
-  SubsidySpecialFlags,
-  SubsidyType,
+  RoundingMode,
+  SubsidyRequirements,
+  SubsidyTrack,
+  SubsidyTrackId,
+  SubsidyVersionRound,
 } from '../types';
 import {
-  calculateDriverEstimates,
-  calculateNewDepreciationSchedule,
-  calculateOperatingMargin,
-  calculatePaybackYears,
-  calculatePerCapitaWage,
-  evaluateSubsidyRequirements,
+  evaluateRequirements,
+  formatMoney,
+  getUnitLabel,
+  parseToYen,
 } from '../utils/financialCalculations';
-import { canConfirmGate, canEdit } from '../utils/permissions';
-import {
-  ReadOnlyRoleBadge,
-  SpecTagBadge,
-  WorkspaceEffectBadge,
-} from './SpecTagBadge';
 
 interface FinancialMasterEditorProps {
   project: Project;
   role: Role;
-  thresholds: SubsidyRequirementThresholds;
-  activeCallRound: CallRound;
-  effectEstimate?: EffectEstimateItem;
-  onUpdateFinancialField: (
+  activeCallRound: SubsidyVersionRound;
+  displayCurrencyUnit: DisplayCurrencyUnit;
+  roundingMode: RoundingMode;
+  onUpdateTrack: (projectId: string, trackId: SubsidyTrackId) => void;
+  onUpdatePlanningYears: (projectId: string, years: PlanningYearsOption) => void;
+  onUpdateEmployeeCountMethod: (projectId: string, method: EmployeeCountMethod) => void;
+  onUpdateAnnualSalesEstimateMethod: (
     projectId: string,
-    period: FinancialPeriodKey,
-    field: keyof FinancialYearData,
+    method: AnnualSalesEstimateMethod
+  ) => void;
+  onUpdateFiscalMonth: (projectId: string, month: number) => void;
+  onOverrideFiscalYears: (
+    projectId: string,
+    currentFY?: number,
+    baseFY?: number
+  ) => void;
+  onUpdatePeriodMonths: (
+    projectId: string,
+    periodKey: PeriodKey,
+    months: number,
+    note?: string
+  ) => void;
+  onUpdateBSItem: (
+    projectId: string,
+    periodKey: PeriodKey,
+    path: (string | number)[],
     value: number
   ) => void;
-  onUpdateInvestmentPlan: (
+  onUpdatePLItem: (
     projectId: string,
-    updates: Partial<InvestmentPlan>
+    periodKey: PeriodKey,
+    segment: 'existingBusiness' | 'subsidyBusiness' | 'root',
+    field: string,
+    value: number
   ) => void;
-  onUpdateHearingVariables: (
-    projectId: string,
-    variables: HearingVariables
-  ) => void;
-  onApplyDriversToForecast: (projectId: string) => void;
-  onUpdateSpecialFlags: (
-    projectId: string,
-    flags: Partial<SubsidySpecialFlags>
-  ) => void;
-  onLockFinancialPlan: (projectId: string) => void;
-  onUnlockFinancialPlan: (projectId: string) => void;
-  onNavigateToEditor: () => void;
-  onNavigateToThresholdsAdmin: () => void;
-  onNotify: (message: string) => void;
+  onUpdateInvestment: (projectId: string, updates: any) => void;
+  onToggleWageSpecial: (projectId: string, isApplied: boolean) => void;
+  onLockPlan: (projectId: string) => void;
+  onUnlockPlan: (projectId: string) => void;
+  onNotify: (msg: string) => void;
 }
 
-const PERIOD_COLUMNS: {
-  key: FinancialPeriodKey;
-  label: string;
-  subLabel: string;
-  isForecast: boolean;
-}[] = [
-  { key: 'yMinus3', label: '前々々期', subLabel: '実績 (Y-3)', isForecast: false },
-  { key: 'yMinus2', label: '前々期', subLabel: '実績 (Y-2)', isForecast: false },
-  { key: 'yMinus1', label: '直前期', subLabel: '基準期 (Y-1)', isForecast: false },
-  { key: 'y1', label: '将来1年目', subLabel: '事業化1年 (Y1)', isForecast: true },
-  { key: 'y2', label: '将来2年目', subLabel: '事業化2年 (Y2)', isForecast: true },
-  { key: 'y3', label: '将来3年目', subLabel: '目標判定 (Y3)', isForecast: true },
-];
-
-type RowDef = {
-  field: keyof FinancialYearData;
-  label: string;
-  unit: string;
-  isCalculated?: boolean;
-  formulaHint?: string;
-  isHighlighted?: boolean;
-  isIndented?: boolean;
-};
-
-const SPREADSHEET_ROWS: RowDef[] = [
-  { field: 'sales', label: '売上高', unit: '万円' },
-  { field: 'costOfSales', label: '売上原価', unit: '万円' },
-  {
-    field: 'grossProfit',
-    label: '売上総利益（粗利）',
-    unit: '万円',
-    isCalculated: true,
-    formulaHint: '売上高 - 売上原価',
-  },
-  { field: 'sga', label: '販売費及び一般管理費', unit: '万円' },
-  {
-    field: 'laborCost',
-    label: 'うち人件費（労務費含）',
-    unit: '万円',
-    isIndented: true,
-  },
-  {
-    field: 'depreciation',
-    label: 'うち減価償却費（投資連動）',
-    unit: '万円',
-    isIndented: true,
-  },
-  {
-    field: 'operatingProfit',
-    label: '営業利益',
-    unit: '万円',
-    isCalculated: true,
-    formulaHint: '売上総利益 - 販管費',
-    isHighlighted: true,
-  },
-  { field: 'ordinaryProfit', label: '経常利益', unit: '万円' },
-  { field: 'netProfit', label: '当期純利益', unit: '万円' },
-  {
-    field: 'valueAdded',
-    label: '付加価値額（公募判定基準）',
-    unit: '万円',
-    isCalculated: true,
-    formulaHint: '営業利益 + 人件費 + 減価償却費',
-    isHighlighted: true,
-  },
-  { field: 'employees', label: '従業員数', unit: '名' },
-  { field: 'totalWages', label: '給与支給総額（賃上げ基礎）', unit: '万円' },
-];
+type MainTab = 'summary' | 'pl' | 'bs' | 'investment';
 
 export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
   project,
   role,
-  thresholds,
   activeCallRound,
-  effectEstimate,
-  onUpdateFinancialField,
-  onUpdateInvestmentPlan,
-  onUpdateHearingVariables,
-  onApplyDriversToForecast,
-  onUpdateSpecialFlags,
-  onLockFinancialPlan,
-  onUnlockFinancialPlan,
-  onNavigateToEditor,
-  onNavigateToThresholdsAdmin,
+  displayCurrencyUnit,
+  roundingMode,
+  onUpdateTrack,
+  onUpdatePlanningYears,
+  onUpdateEmployeeCountMethod,
+  onUpdateAnnualSalesEstimateMethod,
+  onUpdateFiscalMonth,
+  onOverrideFiscalYears,
+  onUpdatePeriodMonths,
+  onUpdateBSItem,
+  onUpdatePLItem,
+  onUpdateInvestment,
+  onToggleWageSpecial,
+  onLockPlan,
+  onUnlockPlan,
   onNotify,
 }) => {
-  const [formatSubTab, setFormatSubTab] =
-    useState<SubsidyType>('新事業進出補助金');
+  const [activeTab, setActiveTab] = useState<MainTab>('summary');
+  const [plSegmentView, setPlSegmentView] = useState<'total' | 'split'>('split');
+  const [showOverrideModal, setShowOverrideModal] = useState(false);
+  const [tempCurrentFY, setTempCurrentFY] = useState(
+    project.financialMaster.autoFiscalCalc.calculatedCurrentFY
+  );
+  const [tempBaseFY, setTempBaseFY] = useState(
+    project.financialMaster.autoFiscalCalc.calculatedBaseFY
+  );
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
+    tangible: true,
+    intangible: false,
+    investments: false,
+    currentAssets: true,
+    currentLiabilities: true,
+    fixedLiabilities: true,
+    equity: true,
+  });
 
   const fm = project.financialMaster;
-  const inv = fm.investment;
-  const hv = project.hearingVariables;
-  const flags = fm.specialFlags;
   const isLocked = fm.status === 'locked';
+  const canEdit = role === '書類作成者' || role === 'システム管理者';
 
-  const canEditFin = canEdit(role, 'financial_edit');
-  const canConfirmG2 = canConfirmGate(role, 'gate-2');
-  const inputsDisabled = isLocked || !canEditFin;
+  // 適用トラックの取得
+  const appliedTrack: SubsidyTrack = useMemo(() => {
+    return (
+      activeCallRound.tracks.find((t) => t.id === fm.appliedTrackId) ??
+      activeCallRound.tracks[0]
+    );
+  }, [activeCallRound, fm.appliedTrackId]);
 
-  const depSchedule = useMemo(
-    () =>
-      calculateNewDepreciationSchedule(
-        inv.totalInvestment,
-        inv.depreciationMethod,
-        inv.usefulLifeYears
-      ),
-    [inv.totalInvestment, inv.depreciationMethod, inv.usefulLifeYears]
-  );
+  // 要件判定
+  const evalResult = useMemo(() => {
+    return evaluateRequirements(fm, appliedTrack, activeCallRound.requirements);
+  }, [fm, appliedTrack, activeCallRound.requirements]);
 
-  const payback = useMemo(() => calculatePaybackYears(fm), [fm]);
-
-  const driverEst = useMemo(
-    () => calculateDriverEstimates(hv, fm.historical.yMinus1.sales),
-    [hv, fm.historical.yMinus1.sales]
-  );
-
-  const evalSummary = useMemo(
-    () => evaluateSubsidyRequirements(fm, thresholds),
-    [fm, thresholds]
-  );
-
-  const mappedExpenseRows = useMemo(
-    () => computeMappedExpenseRows(formatSubTab, inv),
-    [formatSubTab, inv]
-  );
-
-  const totalFunding = inv.subsidyRequested + inv.ownFunds + inv.bankLoan;
-  const fundingGap = totalFunding - inv.totalInvestment;
-
-  const getPeriodData = (key: FinancialPeriodKey): FinancialYearData => {
-    if (key === 'yMinus3' || key === 'yMinus2' || key === 'yMinus1') {
-      return fm.historical[key];
+  // 表示する期間列の決定（3年・4年・5年でフィルタ）
+  const visiblePeriods = useMemo(() => {
+    const list: { key: PeriodKey; label: string; subLabel: string; isBase: boolean }[] = [
+      { key: 'yMinus2', label: '2期前', subLabel: '実績 (Y-2)', isBase: false },
+      { key: 'yMinus1', label: '1期前', subLabel: '実績 (Y-1)', isBase: false },
+      { key: 'y0', label: '直近', subLabel: '直近実績 (Y0)', isBase: false },
+      { key: 'currentFY', label: '申請時事業年度', subLabel: '進行期', isBase: false },
+      { key: 'baseFY', label: '基準年度', subLabel: '事業完了期', isBase: true },
+      { key: 'p1', label: '計画1年目', subLabel: '事業化1年目', isBase: false },
+      { key: 'p2', label: '計画2年目', subLabel: '事業化2年目', isBase: false },
+      { key: 'p3', label: '計画3年目', subLabel: '事業化3年目', isBase: false },
+    ];
+    if (fm.planningYears >= 4) {
+      list.push({ key: 'p4', label: '計画4年目', subLabel: '事業化4年目', isBase: false });
     }
-    return fm.forecast[key];
+    if (fm.planningYears >= 5) {
+      list.push({ key: 'p5', label: '計画5年目', subLabel: '事業化5年目', isBase: false });
+    }
+    return list;
+  }, [fm.planningYears]);
+
+  const toggleSection = (sec: string) => {
+    setExpandedSections((prev) => ({ ...prev, [sec]: !prev[sec] }));
   };
 
-  // 要件未達時の必要増加額アドバイス計算（M8）
-  const requiredVaY3 = Math.ceil(
-    fm.historical.yMinus1.valueAdded *
-      Math.pow(1 + thresholds.shinJigyo.valueAddedGrowthRateAnnual / 100, 3)
-  );
-  const vaShortfall = Math.max(0, requiredVaY3 - fm.forecast.y3.valueAdded);
-
-  const targetPcWageRate = evalSummary.shinJigyo.targetPerCapitaWageGrowth;
-  const requiredPerCapitaY3 = Number(
-    (
-      evalSummary.perCapitaWageBase *
-      Math.pow(1 + targetPcWageRate / 100, 3)
-    ).toFixed(1)
-  );
-  const requiredTotalWagesY3 = Math.ceil(
-    requiredPerCapitaY3 * Math.max(1, fm.forecast.y3.employees)
-  );
-  const wageShortfall = Math.max(
-    0,
-    requiredTotalWagesY3 - fm.forecast.y3.totalWages
-  );
-
-  const handleConfirmLock = () => {
-    if (!canConfirmG2) return;
-    onLockFinancialPlan(project.id);
-    onNotify(
-      `「${project.companyName}」の収支計画マスターを確定し、Gate 2を通過しました。「04. 申請書 作成・編集」のロックが解除されました。`
-    );
-  };
-
-  const handleUnlock = () => {
-    if (!canConfirmG2) return;
-    onUnlockFinancialPlan(project.id);
-    onNotify(
-      '収支計画マスターのロックを解除しました。数値を再編集できます（確定するまで申請書編集は一時ロックされます）。'
-    );
-  };
-
-  const handleApplyDrivers = () => {
-    if (inputsDisabled) return;
-    onApplyDriversToForecast(project.id);
-    onNotify(
-      `算定根拠（直前期売上 ${fm.historical.yMinus1.sales.toLocaleString()}万円 ＋ 新事業売上）を将来1〜3年目の売上高（${driverEst.forecastSalesY1ManYen.toLocaleString()} / ${driverEst.forecastSalesY2ManYen.toLocaleString()} / ${driverEst.forecastSalesY3ManYen.toLocaleString()}万円）へ反映しました。`
-    );
-  };
-
-  const updateDriverVar = (
-    key:
-      | 'newUnitPrice'
-      | 'newCustomerCountY1'
-      | 'newCustomerCountY2'
-      | 'newCustomerCountY3'
-      | 'reducedWorkHours'
-      | 'hourlyWage'
-      | 'subcontractReduction',
-    val: number
+  const handleCellChange = (
+    valStr: string,
+    onSave: (valInYen: number) => void
   ) => {
-    if (inputsDisabled) return;
-    onUpdateHearingVariables(project.id, {
-      ...hv,
-      [key]: {
-        ...hv[key],
-        value: val,
-      },
-    });
+    if (isLocked || !canEdit) return;
+    const yen = parseToYen(valStr, displayCurrencyUnit);
+    onSave(yen);
   };
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 border-b border-slate-200 pb-4">
-        <div>
-          <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500 mb-1">
-            <span>
-              ワークスペース タブ3 · 財務諸表・算定根拠・様式換算・3制度要件判定（ロール:{' '}
-              {role} · 単位: 万円統一）
-            </span>
-            <SpecTagBadge tag="指示書 4-② / Step3" />
-            <SpecTagBadge tag="指示書 ゴール" />
-            <WorkspaceEffectBadge estimate={effectEstimate} />
-          </div>
+    <div className="space-y-6">
+      {/* 1. Header Toolbar: Status, Lock, Version, Track, Planning Years */}
+      <div className="bg-white border border-slate-200 p-4 shadow-xs">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-              収支計画マスター計算シート
-            </h1>
-            {isLocked ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-semibold text-emerald-900 bg-emerald-50 border border-emerald-300">
-                <Lock className="w-3.5 h-3.5" />
-                Gate 2 通過・数値確定ロック中（{fm.lockedAt}）
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300">
-                <Unlock className="w-3.5 h-3.5" />
-                下書き・編集中（Gate 2 未確定）
-              </span>
-            )}
-            {!canEditFin && <ReadOnlyRoleBadge role={role} />}
-          </div>
-          <p className="text-xs text-slate-600 mt-1">
-            対象案件:{' '}
-            <span className="font-semibold text-slate-900">
-              {project.companyName}
-            </span>
-            {' · '}適用公募回: <span className="font-medium">{activeCallRound.name}</span>
-            {' · '}確定した財務数値・投資内訳が3つの補助金様式および文章モジュールの変数タグへ一元連動します。
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {isLocked ? (
-            <>
-              <button
-                type="button"
-                disabled={!canConfirmG2}
-                onClick={handleUnlock}
-                className="px-3.5 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-50 transition-colors whitespace-nowrap cursor-pointer"
-              >
-                ロックを解除して再編集
-              </button>
-              <button
-                type="button"
-                onClick={onNavigateToEditor}
-                className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
-              >
-                04. 申請書 作成・編集へ進む →
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              disabled={!canConfirmG2}
-              onClick={handleConfirmLock}
-              className="px-5 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-50 transition-colors whitespace-nowrap cursor-pointer"
-            >
-              この収支計画で確定する（Gate 2 通過）
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* SECTION 1: Investment, Funding & Depreciation Setup */}
-      <section
-        data-guide-id="guide-fin-investment"
-        className="bg-white border border-slate-200 p-6 space-y-6"
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3">
-          <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-base font-bold text-slate-900">
-                01. 設備投資内訳・資金調達前提・減価償却ルール設定
-              </h2>
-              <SpecTagBadge tag="指示書 4-②" />
-            </div>
-            <p className="text-xs text-slate-500 mt-0.5">
-              金額・償却方式・耐用年数を変更すると、下表「将来1〜3年目の減価償却費・付加価値額」がリアルタイムに自動再計算されます。
-            </p>
-          </div>
-          {isLocked && (
-            <span className="text-xs font-medium text-slate-500">
-              ※現在Gate 2ロック中のため入力欄は保護されています
-            </span>
-          )}
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Column 1: Investment Breakdown */}
-          <div className="border border-slate-200 p-4 space-y-3">
-            <div className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-2">
-              A. 設備投資額の内訳（万円・税抜）
-            </div>
-
-            {(
-              [
-                { key: 'machineryCost', label: '機械装置・工具器具費' },
-                { key: 'systemCost', label: 'システム・ソフトウェア費' },
-                { key: 'subcontractCost', label: '外注費・専門家経費' },
-                { key: 'otherCost', label: 'その他補助対象経費' },
-              ] as const
-            ).map((item) => (
-              <div
-                key={item.key}
-                className="flex items-center justify-between gap-3 text-xs"
-              >
-                <label className="text-slate-700">{item.label}</label>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="number"
-                    min={0}
-                    step={10}
-                    disabled={inputsDisabled}
-                    value={inv[item.key]}
-                    onChange={(e) =>
-                      onUpdateInvestmentPlan(project.id, {
-                        [item.key]: Number(e.target.value) || 0,
-                      })
-                    }
-                    className="w-28 text-right font-mono tabular-nums border border-slate-300 px-2.5 py-1 text-xs text-slate-900 bg-white disabled:bg-slate-100 focus:outline-none focus:border-slate-800"
-                  />
-                  <span className="text-slate-500">万円</span>
-                </div>
-              </div>
-            ))}
-
-            <div className="pt-2.5 border-t border-slate-200 flex items-center justify-between text-xs">
-              <span className="font-bold text-slate-900">
-                総投資額（自動集計）
+              <span className="text-sm font-bold text-slate-900">
+                収支計画マスター（公式フォーマット準拠）
               </span>
-              <span className="font-mono tabular-nums text-base font-bold text-slate-900">
-                {inv.totalInvestment.toLocaleString()} 万円
-              </span>
-            </div>
-          </div>
-
-          {/* Column 2: Funding Plan */}
-          <div className="border border-slate-200 p-4 space-y-3">
-            <div className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-2">
-              B. 資金調達内訳（万円）
-            </div>
-
-            {(
-              [
-                { key: 'subsidyRequested', label: '補助金 申請希望額' },
-                { key: 'ownFunds', label: '自己資金充当額' },
-                { key: 'bankLoan', label: '金融機関 借入予定額' },
-              ] as const
-            ).map((item) => (
-              <div
-                key={item.key}
-                className="flex items-center justify-between gap-3 text-xs"
-              >
-                <label className="text-slate-700">{item.label}</label>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="number"
-                    min={0}
-                    step={10}
-                    disabled={inputsDisabled}
-                    value={inv[item.key]}
-                    onChange={(e) =>
-                      onUpdateInvestmentPlan(project.id, {
-                        [item.key]: Number(e.target.value) || 0,
-                      })
-                    }
-                    className="w-28 text-right font-mono tabular-nums border border-slate-300 px-2.5 py-1 text-xs text-slate-900 bg-white disabled:bg-slate-100 focus:outline-none focus:border-slate-800"
-                  />
-                  <span className="text-slate-500">万円</span>
-                </div>
-              </div>
-            ))}
-
-            <div className="pt-2.5 border-t border-slate-200 space-y-1.5 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-slate-900">資金調達 合計</span>
-                <span className="font-mono tabular-nums text-base font-bold text-slate-900">
-                  {totalFunding.toLocaleString()} 万円
+              {isLocked ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-amber-50 text-amber-800 border border-amber-300 text-xs font-semibold">
+                  <Lock className="w-3.5 h-3.5" />
+                  確定ロック中（Gate 2通過済）
                 </span>
-              </div>
-              {fundingGap === 0 ? (
-                <div className="text-[11px] text-emerald-800 font-medium">
-                  総投資額と調達合計が完全一致しています（差額 0万円）
-                </div>
-              ) : fundingGap > 0 ? (
-                <div className="text-[11px] text-sky-800 font-medium">
-                  総投資額に対し +{fundingGap.toLocaleString()}万円 の運転資金余裕あり
-                </div>
               ) : (
-                <div className="text-[11px] text-rose-800 font-semibold">
-                  調達不足: あと {Math.abs(fundingGap).toLocaleString()}万円 の自己資金または借入が必要です
-                </div>
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-blue-50 text-blue-800 border border-blue-200 text-xs font-medium">
+                  <Unlock className="w-3.5 h-3.5" />
+                  下書き編集中
+                </span>
               )}
             </div>
-          </div>
 
-          {/* Column 3: Depreciation & Payback Auto Preview */}
-          <div className="border border-slate-200 p-4 space-y-3 bg-slate-50/50">
-            <div className="text-xs font-bold text-slate-900 border-b border-slate-200 pb-2">
-              C. 減価償却自動計算 ＆ 回収年数プレビュー
-            </div>
-
-            <div className="flex items-center justify-between gap-2 text-xs">
-              <label htmlFor="dep-method-select" className="text-slate-700">
-                減価償却方式
+            {/* 枠選択 */}
+            <div className="flex items-center gap-1.5 ml-2">
+              <label htmlFor="track-select" className="text-xs font-semibold text-slate-700">
+                申請枠:
               </label>
               <select
-                id="dep-method-select"
-                disabled={inputsDisabled}
-                value={inv.depreciationMethod}
+                id="track-select"
+                disabled={isLocked || !canEdit}
+                value={fm.appliedTrackId}
                 onChange={(e) =>
-                  onUpdateInvestmentPlan(project.id, {
-                    depreciationMethod: e.target.value as DepreciationMethod,
-                  })
+                  onUpdateTrack(project.id, e.target.value as SubsidyTrackId)
                 }
-                className="bg-white border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-900 disabled:bg-slate-100 focus:outline-none focus:border-slate-800"
+                className="bg-slate-50 border border-slate-300 text-slate-900 text-xs font-semibold px-2.5 py-1 focus:outline-none focus:border-slate-800 disabled:opacity-75"
               >
-                <option value="straight-line">定額法（均等償却）</option>
-                <option value="declining-balance">定率法（200%定率償却）</option>
+                {activeCallRound.tracks.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
               </select>
             </div>
 
-            <div className="flex items-center justify-between gap-2 text-xs">
-              <label htmlFor="useful-life-input" className="text-slate-700">
-                法定耐用年数
+            {/* 計画期間年数選択（3年 / 4年 / 5年） */}
+            <div className="flex items-center gap-1.5 ml-2">
+              <label htmlFor="plan-years-select" className="text-xs font-semibold text-slate-700">
+                事業計画期間:
               </label>
-              <div className="flex items-center gap-1.5">
-                <input
-                  id="useful-life-input"
-                  type="number"
-                  min={1}
-                  max={30}
-                  disabled={inputsDisabled}
-                  value={inv.usefulLifeYears}
-                  onChange={(e) =>
-                    onUpdateInvestmentPlan(project.id, {
-                      usefulLifeYears: Math.max(1, Number(e.target.value) || 1),
-                    })
-                  }
-                  className="w-20 text-right font-mono tabular-nums border border-slate-300 px-2.5 py-1 text-xs text-slate-900 bg-white disabled:bg-slate-100 focus:outline-none focus:border-slate-800"
-                />
-                <span className="text-slate-500">
-                  年（償却率 {depSchedule.ratePercent}%）
-                </span>
-              </div>
-            </div>
-
-            <div className="bg-white border border-slate-200 p-3 space-y-1.5 text-xs">
-              <div className="font-semibold text-slate-800">
-                新規投資分の各期償却費（自動加算値）
-              </div>
-              <div className="grid grid-cols-3 gap-2 font-mono tabular-nums pt-1">
-                <div>
-                  <span className="text-[11px] text-slate-500 block">1年目</span>
-                  <span className="font-bold text-slate-900">
-                    +{depSchedule.y1.toLocaleString()}万
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[11px] text-slate-500 block">2年目</span>
-                  <span className="font-bold text-slate-900">
-                    +{depSchedule.y2.toLocaleString()}万
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[11px] text-slate-500 block">3年目</span>
-                  <span className="font-bold text-slate-900">
-                    +{depSchedule.y3.toLocaleString()}万
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between text-xs pt-1">
-              <span className="text-slate-600">投資回収年数（CF概算）:</span>
-              <span className="font-mono tabular-nums font-bold text-slate-900">
-                約 {payback.years} 年（年CF増{' '}
-                {payback.annualCashFlowIncrease.toLocaleString()}万円）
-              </span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* SECTION 2 (M2): Revenue & Cost Calculation Basis */}
-      <section
-        data-guide-id="guide-fin-drivers"
-        className="bg-white border border-slate-200 p-6 space-y-5"
-      >
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-200 pb-3">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-bold text-slate-900">
-                02. 売上・コスト算定根拠（単価×数量／削減工数）
-              </h2>
-              <SpecTagBadge tag="指示書 Step3" />
-            </div>
-            <p className="text-xs text-slate-500 mt-0.5">
-              「タブ2: マスターヒアリングシート」の算定変数と双方向連動しています。計算式を確認し、将来3ヶ年の売上高計画（既存事業据置＋新事業売上）へワンクリックで反映できます。
-            </p>
-          </div>
-
-          <button
-            type="button"
-            disabled={inputsDisabled}
-            onClick={handleApplyDrivers}
-            className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            算定結果を将来3ヶ年計画へ反映
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {/* New Business Sales Formula Box */}
-          <div className="border border-slate-200 p-4 space-y-3">
-            <div className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-2">
-              A. 新事業売上（1〜3年目）＝ 新事業客単価 × 想定客数／受注件数
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-              <div>
-                <label className="block text-[11px] text-slate-600 mb-1">
-                  新事業客単価（円）
-                </label>
-                <input
-                  type="number"
-                  step={1000}
-                  disabled={inputsDisabled}
-                  value={hv.newUnitPrice.value}
-                  onChange={(e) =>
-                    updateDriverVar('newUnitPrice', Number(e.target.value) || 0)
-                  }
-                  className="w-full text-right font-mono tabular-nums border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] text-slate-600 mb-1">
-                  1年目 客数（件/年）
-                </label>
-                <input
-                  type="number"
-                  disabled={inputsDisabled}
-                  value={hv.newCustomerCountY1.value}
-                  onChange={(e) =>
-                    updateDriverVar(
-                      'newCustomerCountY1',
-                      Number(e.target.value) || 0
-                    )
-                  }
-                  className="w-full text-right font-mono tabular-nums border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] text-slate-600 mb-1">
-                  2年目 客数（件/年）
-                </label>
-                <input
-                  type="number"
-                  disabled={inputsDisabled}
-                  value={hv.newCustomerCountY2.value}
-                  onChange={(e) =>
-                    updateDriverVar(
-                      'newCustomerCountY2',
-                      Number(e.target.value) || 0
-                    )
-                  }
-                  className="w-full text-right font-mono tabular-nums border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] text-slate-600 mb-1">
-                  3年目 客数（件/年）
-                </label>
-                <input
-                  type="number"
-                  disabled={inputsDisabled}
-                  value={hv.newCustomerCountY3.value}
-                  onChange={(e) =>
-                    updateDriverVar(
-                      'newCustomerCountY3',
-                      Number(e.target.value) || 0
-                    )
-                  }
-                  className="w-full text-right font-mono tabular-nums border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100"
-                />
-              </div>
-            </div>
-
-            <div className="bg-slate-50 border border-slate-200 p-3 space-y-1.5 text-xs font-mono tabular-nums">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-slate-600">1年目 新事業売上:</span>
-                <span className="font-semibold text-slate-900">
-                  {hv.newUnitPrice.value.toLocaleString()}円 ×{' '}
-                  {hv.newCustomerCountY1.value.toLocaleString()}件 ={' '}
-                  {driverEst.newSalesY1ManYen.toLocaleString()}万円
-                  <span className="text-slate-500 font-normal">
-                    （全社計 {driverEst.forecastSalesY1ManYen.toLocaleString()}万）
-                  </span>
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-slate-600">2年目 新事業売上:</span>
-                <span className="font-semibold text-slate-900">
-                  {hv.newUnitPrice.value.toLocaleString()}円 ×{' '}
-                  {hv.newCustomerCountY2.value.toLocaleString()}件 ={' '}
-                  {driverEst.newSalesY2ManYen.toLocaleString()}万円
-                  <span className="text-slate-500 font-normal">
-                    （全社計 {driverEst.forecastSalesY2ManYen.toLocaleString()}万）
-                  </span>
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-slate-600">3年目 新事業売上:</span>
-                <span className="font-bold text-emerald-900">
-                  {hv.newUnitPrice.value.toLocaleString()}円 ×{' '}
-                  {hv.newCustomerCountY3.value.toLocaleString()}件 ={' '}
-                  {driverEst.newSalesY3ManYen.toLocaleString()}万円
-                  <span className="text-slate-600 font-normal">
-                    （全社計 {driverEst.forecastSalesY3ManYen.toLocaleString()}万）
-                  </span>
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Cost Reduction Formula Box */}
-          <div className="border border-slate-200 p-4 space-y-3 flex flex-col justify-between">
-            <div className="space-y-3">
-              <div className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-2">
-                B. 年間コスト削減額 ＝ 削減作業時間 × 時間単価 ＋ 外注費削減額
-              </div>
-
-              <div className="grid grid-cols-3 gap-3 text-xs">
-                <div>
-                  <label className="block text-[11px] text-slate-600 mb-1">
-                    削減作業時間（時間/年）
-                  </label>
-                  <input
-                    type="number"
-                    step={10}
-                    disabled={inputsDisabled}
-                    value={hv.reducedWorkHours.value}
-                    onChange={(e) =>
-                      updateDriverVar(
-                        'reducedWorkHours',
-                        Number(e.target.value) || 0
-                      )
-                    }
-                    className="w-full text-right font-mono tabular-nums border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-slate-600 mb-1">
-                    時間単価（円/時）
-                  </label>
-                  <input
-                    type="number"
-                    step={100}
-                    disabled={inputsDisabled}
-                    value={hv.hourlyWage.value}
-                    onChange={(e) =>
-                      updateDriverVar('hourlyWage', Number(e.target.value) || 0)
-                    }
-                    className="w-full text-right font-mono tabular-nums border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-slate-600 mb-1">
-                    外注費削減額（万円/年）
-                  </label>
-                  <input
-                    type="number"
-                    step={10}
-                    disabled={inputsDisabled}
-                    value={hv.subcontractReduction.value}
-                    onChange={(e) =>
-                      updateDriverVar(
-                        'subcontractReduction',
-                        Number(e.target.value) || 0
-                      )
-                    }
-                    className="w-full text-right font-mono tabular-nums border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-slate-50 border border-slate-200 p-3 space-y-1.5 text-xs font-mono tabular-nums">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-slate-600">労務工数削減換算:</span>
-                <span className="text-slate-900">
-                  {hv.reducedWorkHours.value.toLocaleString()}時間 ×{' '}
-                  {hv.hourlyWage.value.toLocaleString()}円 ={' '}
-                  {driverEst.laborCostSavingManYen.toLocaleString()}万円/年
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-200">
-                <span className="font-sans font-semibold text-slate-800">
-                  年間コスト削減効果 合計:
-                </span>
-                <span className="font-bold text-slate-900">
-                  {driverEst.laborCostSavingManYen.toLocaleString()}万円 ＋ 外注削減{' '}
-                  {driverEst.subcontractSavingManYen.toLocaleString()}万円 ={' '}
-                  {driverEst.totalCostReductionManYen.toLocaleString()}万円/年
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* SECTION 3: 6-Year Financial Spreadsheet Table */}
-      <section
-        data-guide-id="guide-fin-historical"
-        className="bg-white border border-slate-200"
-      >
-        <div className="p-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-base font-bold text-slate-900">
-                03. 直近3期 決算実績 ＆ 将来3ヶ年 収支計画表（万円単位）
-              </h2>
-              <SpecTagBadge tag="指示書 4-②" />
-            </div>
-            <p className="text-xs text-slate-500 mt-0.5">
-              網掛け行（売上総利益・営業利益・付加価値額・一人当たり給与）は自動計算されます。付加価値額 ＝ 営業利益 ＋ 人件費 ＋ 減価償却費
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-4 text-xs font-mono tabular-nums text-slate-600">
-            <span>
-              付加価値年率:{' '}
-              <strong
-                className={
-                  evalSummary.shinJigyo.isVaPassed
-                    ? 'text-emerald-800'
-                    : 'text-rose-700'
+              <select
+                id="plan-years-select"
+                disabled={isLocked || !canEdit}
+                value={fm.planningYears}
+                onChange={(e) =>
+                  onUpdatePlanningYears(
+                    project.id,
+                    Number(e.target.value) as PlanningYearsOption
+                  )
                 }
+                className="bg-slate-50 border border-slate-300 text-slate-900 text-xs font-semibold px-2 py-1 focus:outline-none focus:border-slate-800 disabled:opacity-75"
               >
-                {evalSummary.vaGrowthAnnual >= 0 ? '+' : ''}
-                {evalSummary.vaGrowthAnnual}%
-              </strong>
-            </span>
-            <span>
-              一人当たり給与年率:{' '}
-              <strong
-                className={
-                  evalSummary.shinJigyo.isWagePassed
-                    ? 'text-emerald-800'
-                    : 'text-rose-700'
-                }
-              >
-                {evalSummary.perCapitaWageGrowthAnnual >= 0 ? '+' : ''}
-                {evalSummary.perCapitaWageGrowthAnnual}%
-              </strong>
-            </span>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-left">
-            <thead>
-              <tr className="bg-slate-100 border-b border-slate-200 text-xs font-semibold text-slate-700">
-                <th className="py-3 px-4 min-w-[230px] sticky left-0 bg-slate-100 z-10">
-                  勘定科目 / 指標（単位）
-                </th>
-                {PERIOD_COLUMNS.map((col) => (
-                  <th
-                    key={col.key}
-                    className={`py-2.5 px-3 text-right min-w-[118px] border-l border-slate-200 whitespace-nowrap ${
-                      col.key === 'yMinus1'
-                        ? 'bg-slate-200/60 text-slate-900'
-                        : col.isForecast
-                          ? 'bg-sky-50/60 text-slate-900'
-                          : ''
-                    }`}
-                  >
-                    <div>{col.label}</div>
-                    <div className="text-[11px] font-normal text-slate-500">
-                      {col.subLabel}
-                    </div>
-                  </th>
-                ))}
-                <th className="py-2.5 px-3 text-right min-w-[125px] border-l border-slate-200 whitespace-nowrap bg-slate-100">
-                  <div>3年後変化</div>
-                  <div className="text-[11px] font-normal text-slate-500">
-                    Y-1比 / 年率
-                  </div>
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 text-xs">
-              {SPREADSHEET_ROWS.map((row) => {
-                const baseVal = fm.historical.yMinus1[row.field];
-                const y3Val = fm.forecast.y3[row.field];
-                const diff = y3Val - baseVal;
-
-                return (
-                  <tr
-                    key={row.field}
-                    className={
-                      row.isHighlighted
-                        ? 'bg-slate-100/90 font-semibold'
-                        : row.isCalculated
-                          ? 'bg-slate-50/90 font-medium'
-                          : 'bg-white hover:bg-slate-50/40'
-                    }
-                  >
-                    <td
-                      className={`py-2.5 px-4 sticky left-0 z-10 border-r border-slate-200 ${
-                        row.isHighlighted
-                          ? 'bg-slate-100 text-slate-900 font-bold'
-                          : row.isCalculated
-                            ? 'bg-slate-50 text-slate-800 font-semibold'
-                            : 'bg-white text-slate-700'
-                      } ${row.isIndented ? 'pl-7 text-slate-600' : ''}`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span>{row.label}</span>
-                        <span className="text-[11px] font-normal text-slate-400">
-                          {row.unit}
-                        </span>
-                      </div>
-                      {row.formulaHint && (
-                        <div className="text-[10px] font-normal text-slate-500 mt-0.5">
-                          自動計算: {row.formulaHint}
-                        </div>
-                      )}
-                    </td>
-
-                    {PERIOD_COLUMNS.map((col) => {
-                      const yearData = getPeriodData(col.key);
-                      const cellValue = yearData[row.field];
-                      const marginPct =
-                        row.field === 'operatingProfit'
-                          ? calculateOperatingMargin(yearData)
-                          : null;
-
-                      return (
-                        <td
-                          key={col.key}
-                          className={`py-2 px-2.5 text-right border-l border-slate-200 font-mono tabular-nums ${
-                            col.isForecast && !row.isCalculated && !row.isHighlighted
-                              ? 'bg-sky-50/15'
-                              : ''
-                          }`}
-                        >
-                          {row.isCalculated ? (
-                            <div>
-                              <span
-                                className={
-                                  cellValue < 0
-                                    ? 'text-rose-700 font-bold'
-                                    : 'text-slate-900'
-                                }
-                              >
-                                {cellValue.toLocaleString()}
-                              </span>
-                              {marginPct !== null && (
-                                <div className="text-[10px] font-normal text-slate-500">
-                                  利益率 {marginPct.toFixed(1)}%
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <input
-                              type="number"
-                              disabled={inputsDisabled}
-                              value={cellValue}
-                              onChange={(e) =>
-                                onUpdateFinancialField(
-                                  project.id,
-                                  col.key,
-                                  row.field,
-                                  Number(e.target.value) || 0
-                                )
-                              }
-                              aria-label={`${col.label}の${row.label}`}
-                              className="w-full max-w-[100px] text-right font-mono tabular-nums border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100/70 disabled:border-transparent focus:outline-none focus:border-slate-900"
-                            />
-                          )}
-                        </td>
-                      );
-                    })}
-
-                    {/* Delta / Growth Column */}
-                    <td className="py-2 px-3 text-right border-l border-slate-200 font-mono tabular-nums whitespace-nowrap">
-                      <span
-                        className={
-                          diff > 0
-                            ? 'text-emerald-800 font-semibold'
-                            : diff < 0
-                              ? 'text-rose-700 font-semibold'
-                              : 'text-slate-500'
-                        }
-                      >
-                        {diff > 0
-                          ? `+${diff.toLocaleString()}`
-                          : diff.toLocaleString()}
-                      </span>
-                      {row.field === 'valueAdded' && (
-                        <div className="text-[10px] text-slate-600">
-                          年率 {evalSummary.vaGrowthAnnual}%
-                        </div>
-                      )}
-                      {row.field === 'totalWages' && (
-                        <div className="text-[10px] text-slate-600">
-                          年率 {evalSummary.wageGrowthAnnual}%
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-
-              {/* Calculated Per-Capita Wage Row (M8) */}
-              <tr className="bg-slate-100/90 font-semibold">
-                <td className="py-2.5 px-4 sticky left-0 z-10 border-r border-slate-200 bg-slate-100 text-slate-900 font-bold">
-                  <div className="flex items-center justify-between gap-2">
-                    <span>一人当たり給与支給総額（M8判定）</span>
-                    <span className="text-[11px] font-normal text-slate-500">
-                      万円/人
-                    </span>
-                  </div>
-                  <div className="text-[10px] font-normal text-slate-500 mt-0.5">
-                    自動計算: 給与支給総額 ÷ 従業員数
-                  </div>
-                </td>
-                {PERIOD_COLUMNS.map((col) => {
-                  const yd = getPeriodData(col.key);
-                  const pc = calculatePerCapitaWage(yd);
-                  return (
-                    <td
-                      key={col.key}
-                      className="py-2 px-2.5 text-right border-l border-slate-200 font-mono tabular-nums text-slate-900"
-                    >
-                      {pc.toFixed(1)}
-                    </td>
-                  );
-                })}
-                <td className="py-2 px-3 text-right border-l border-slate-200 font-mono tabular-nums whitespace-nowrap">
-                  <span
-                    className={
-                      evalSummary.perCapitaWageY3 -
-                        evalSummary.perCapitaWageBase >=
-                      0
-                        ? 'text-emerald-800 font-semibold'
-                        : 'text-rose-700 font-semibold'
-                    }
-                  >
-                    {evalSummary.perCapitaWageY3 -
-                      evalSummary.perCapitaWageBase >=
-                    0
-                      ? '+'
-                      : ''}
-                    {(
-                      evalSummary.perCapitaWageY3 -
-                      evalSummary.perCapitaWageBase
-                    ).toFixed(1)}
-                  </span>
-                  <div className="text-[10px] text-slate-600">
-                    年率 {evalSummary.perCapitaWageGrowthAnnual}%
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      {/* SECTION 4 (M8): 3-Subsidy Requirement Pass/Fail Alerts & Special Flags */}
-      <section
-        data-guide-id="guide-fin-requirements"
-        className="bg-white border border-slate-200 p-6 space-y-5"
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-bold text-slate-900">
-                04. 公募要件達成判定・特例シミュレーション（アラート自動検出）
-              </h2>
-              <SpecTagBadge tag="指示書 4-②" />
+                <option value={3}>3年間（P1〜P3）</option>
+                <option value={4}>4年間（P1〜P4）</option>
+                <option value={5}>5年間（P1〜P5）</option>
+              </select>
             </div>
-            <p className="text-xs text-slate-500 mt-0.5">
-              適用中「{activeCallRound.name}」の要件しきい値（2026年11月時点公開情報に基づく参考値）と、案件別の特例フラグから自動判定します。
-            </p>
+
+            {/* 賃上げ特例スイッチ */}
+            <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 cursor-pointer ml-2">
+              <input
+                type="checkbox"
+                disabled={isLocked || !canEdit}
+                checked={fm.isWageSpecialApplied}
+                onChange={(e) => onToggleWageSpecial(project.id, e.target.checked)}
+                className="w-4 h-4 text-blue-600 focus:ring-0"
+              />
+              <span>賃上げ特例を適用（上限引上げ・給与CAGR+6.0%・最賃+50円）</span>
+            </label>
           </div>
-          <button
-            type="button"
-            onClick={onNavigateToThresholdsAdmin}
-            className="text-xs text-slate-700 hover:text-slate-900 underline self-start sm:self-auto cursor-pointer"
-          >
-            公募回・要件しきい値設定（管理者画面）を確認 →
-          </button>
+
+          {/* Action buttons: Lock / Unlock */}
+          <div className="flex items-center gap-2">
+            {isLocked ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onUnlockPlan(project.id);
+                  onNotify('収支計画のロックを解除しました。再編集可能です。');
+                }}
+                disabled={!canEdit}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 transition-colors cursor-pointer"
+              >
+                <Unlock className="w-3.5 h-3.5" />
+                <span>ロック解除（再編集）</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  onLockPlan(project.id);
+                  onNotify('収支計画を確定ロックしました（Gate 2通過）。');
+                }}
+                disabled={!canEdit}
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 transition-colors cursor-pointer shadow-xs"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                <span>収支計画を確定・ロック（Gate 2）</span>
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Warning Banner when Shin-Jigyo Requirements Fail */}
-        {!evalSummary.shinJigyo.isAllPassed && (
-          <div className="bg-rose-50 border border-rose-300 p-4 space-y-2">
-            <div className="flex items-center gap-2 text-xs font-bold text-rose-900">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>
-                【公募要件 未達・要確認アラート】新事業進出補助金の必須要件に不足項目があります
+        {/* 2. 基準年度自動算出の根拠表示バー */}
+        <div className="mt-3 p-3 bg-slate-50 border border-slate-200 flex flex-col md:flex-row md:items-center md:justify-between gap-3 text-xs">
+          <div className="flex items-start gap-2">
+            <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <div className="text-slate-800 leading-relaxed font-medium">
+                {fm.autoFiscalCalc.explanationText}
+              </div>
+              <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500">
+                <span>
+                  決算月:{' '}
+                  <select
+                    value={fm.fiscalMonth}
+                    disabled={isLocked || !canEdit}
+                    onChange={(e) => onUpdateFiscalMonth(project.id, Number(e.target.value))}
+                    className="font-semibold text-slate-800 bg-white border border-slate-300 px-1 py-0.5"
+                  >
+                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((m) => (
+                      <option key={m} value={m}>
+                        {m}月決算
+                      </option>
+                    ))}
+                  </select>
+                </span>
+                <span>
+                  申請締切日: <strong className="text-slate-700">{appliedTrack.applicationDeadline}</strong>
+                </span>
+                <span>
+                  採択予定日: <strong className="text-slate-700">{appliedTrack.adoptionDate}</strong>
+                </span>
+                <span>
+                  枠実施期間: <strong className="text-slate-700">{appliedTrack.executionPeriodMonths}か月</strong>
+                  {appliedTrack.executionPeriodMonthsTentative && (
+                    <span className="ml-1 text-[10px] px-1 bg-amber-100 text-amber-800 border border-amber-300 font-bold">
+                      仮
+                    </span>
+                  )}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {fm.autoFiscalCalc.isOverriddenBaseFY || fm.autoFiscalCalc.isOverriddenCurrentFY ? (
+              <span className="inline-flex items-center gap-1 text-amber-700 bg-amber-50 px-2 py-1 border border-amber-200 text-[11px] font-semibold">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                手動上書き中
               </span>
-            </div>
-            <ul className="list-disc pl-5 text-xs text-rose-900 space-y-1 leading-relaxed">
-              {!evalSummary.shinJigyo.isVaPassed && (
-                <li>
-                  付加価値額の年平均成長率が{' '}
-                  <strong>{evalSummary.vaGrowthAnnual}%</strong>{' '}
-                  となっており、公募要件（年率{' '}
-                  <strong>
-                    {thresholds.shinJigyo.valueAddedGrowthRateAnnual}%
-                  </strong>{' '}
-                  以上）を下回っています。将来3年目（Y3）の付加価値額をあと{' '}
-                  <strong>{vaShortfall.toLocaleString()}万円</strong> 以上（目標{' '}
-                  {requiredVaY3.toLocaleString()}万円以上）引き上げる計画見直しが必要です。
-                </li>
-              )}
-              {!evalSummary.shinJigyo.isWagePassed && (
-                <li>
-                  一人当たり給与支給総額の年平均成長率が{' '}
-                  <strong>{evalSummary.perCapitaWageGrowthAnnual}%</strong>{' '}
-                  となっており、要件（年率{' '}
-                  <strong>{targetPcWageRate}%</strong>{' '}
-                  以上）を下回っています。3年目の給与支給総額をあと{' '}
-                  <strong>{wageShortfall.toLocaleString()}万円</strong> 以上（目標{' '}
-                  {requiredTotalWagesY3.toLocaleString()}万円以上）に設定してください。
-                </li>
-              )}
-              {!evalSummary.shinJigyo.isMinSubsidyPassed && (
-                <li>
-                  補助金額（換算 {evalSummary.shinJigyo.cappedSubsidy.toLocaleString()}万円 / 希望 {inv.subsidyRequested.toLocaleString()}万円）が、新事業進出補助金の補助下限額（
-                  <strong>
-                    {thresholds.shinJigyo.minSubsidyAmount.toLocaleString()}万円
-                  </strong>
-                  ）を下回っています。持続化補助金または東京都助成事業を主軸とする構成をご検討ください。
-                </li>
-              )}
-              {!evalSummary.shinJigyo.isWithinCap && (
-                <li>
-                  補助金申請希望額（{inv.subsidyRequested.toLocaleString()}万円）が従業員規模区分「{evalSummary.shinJigyo.tierLabel}」の上限額（
-                  <strong>
-                    {evalSummary.shinJigyo.effectiveMaxCap.toLocaleString()}万円
-                  </strong>
-                  ）を超過しています。
-                </li>
-              )}
-              {!evalSummary.shinJigyo.isFundingBalanced && (
-                <li>
-                  資金調達合計（{totalFunding.toLocaleString()}万円）が総投資額（
-                  {inv.totalInvestment.toLocaleString()}万円）を下回っています。
-                </li>
-              )}
-            </ul>
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-          {/* Card 1: 新事業進出補助金 */}
-          <div className="border border-slate-200 p-5 space-y-3 flex flex-col justify-between">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-                <h3 className="text-sm font-bold text-slate-900">
-                  新事業進出補助金
-                </h3>
-                {evalSummary.shinJigyo.isAllPassed ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-semibold text-emerald-900 bg-emerald-50 border border-emerald-300">
-                    <Check className="w-3 h-3" />
-                    全要件クリア
-                  </span>
-                ) : (
-                  <span className="px-2 py-0.5 text-xs font-semibold text-rose-900 bg-rose-50 border border-rose-300">
-                    要件未達・超過あり
-                  </span>
-                )}
-              </div>
-
-              <div className="space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600">
-                    付加価値額 年率（{thresholds.shinJigyo.valueAddedGrowthRateAnnual}%以上）
-                  </span>
-                  <span
-                    className={`font-mono tabular-nums font-bold ${
-                      evalSummary.shinJigyo.isVaPassed
-                        ? 'text-emerald-800'
-                        : 'text-rose-700'
-                    }`}
-                  >
-                    {evalSummary.vaGrowthAnnual}%（
-                    {evalSummary.shinJigyo.isVaPassed ? '達成' : '未達'}）
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600">
-                    一人当たり給与 年率（{targetPcWageRate}%以上）
-                  </span>
-                  <span
-                    className={`font-mono tabular-nums font-bold ${
-                      evalSummary.shinJigyo.isWagePassed
-                        ? 'text-emerald-800'
-                        : 'text-rose-700'
-                    }`}
-                  >
-                    {evalSummary.perCapitaWageGrowthAnnual}%（
-                    {evalSummary.shinJigyo.isWagePassed ? '達成' : '未達'}）
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600">事業場内最低賃金要件</span>
-                  <span className="font-mono tabular-nums text-slate-800 font-medium">
-                    地域別最賃＋{evalSummary.shinJigyo.minWagePlusYen}円以上
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-                  <span className="text-slate-600">
-                    補助率（{evalSummary.shinJigyo.appliedRateNum}/
-                    {evalSummary.shinJigyo.appliedRateDen}）換算額
-                  </span>
-                  <span className="font-mono tabular-nums text-slate-900 font-bold">
-                    {evalSummary.shinJigyo.cappedSubsidy.toLocaleString()} 万円
-                  </span>
-                </div>
-                <div className="text-[11px] text-slate-500 font-mono tabular-nums">
-                  規模区分「{evalSummary.shinJigyo.tierLabel}」上限{' '}
-                  {evalSummary.shinJigyo.effectiveMaxCap.toLocaleString()}万 / 下限{' '}
-                  {evalSummary.shinJigyo.minSubsidyAmount.toLocaleString()}万
-                </div>
-              </div>
-            </div>
-
-            {/* Special Flags */}
-            <div className="pt-2.5 border-t border-slate-200 space-y-1.5 text-xs">
-              <div className="text-[11px] font-semibold text-slate-700">
-                特例適用シミュレーション:
-              </div>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  disabled={inputsDisabled}
-                  checked={flags.shinJigyoWageSpecial}
-                  onChange={(e) =>
-                    onUpdateSpecialFlags(project.id, {
-                      shinJigyoWageSpecial: e.target.checked,
-                    })
-                  }
-                  className="accent-slate-900"
-                />
-                <span className="text-slate-700">
-                  賃上げ特例（上限引上げ・給与年率{thresholds.shinJigyo.perCapitaWageGrowthSpecialAnnual}%）
-                </span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  disabled={inputsDisabled}
-                  checked={flags.shinJigyoMinWageSpecial}
-                  onChange={(e) =>
-                    onUpdateSpecialFlags(project.id, {
-                      shinJigyoMinWageSpecial: e.target.checked,
-                    })
-                  }
-                  className="accent-slate-900"
-                />
-                <span className="text-slate-700">
-                  地域別最低賃金引上げ特例（補助率2/3・最賃+{thresholds.shinJigyo.minWageSpecialPlusYen}円）
-                </span>
-              </label>
-            </div>
-          </div>
-
-          {/* Card 2: 小規模事業者持続化補助金 */}
-          <div className="border border-slate-200 p-5 space-y-3 flex flex-col justify-between">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-                <h3 className="text-sm font-bold text-slate-900">
-                  小規模事業者持続化補助金
-                </h3>
-                <span className="px-2 py-0.5 text-xs font-semibold text-slate-800 bg-slate-100 border border-slate-300">
-                  上限 {evalSummary.jizokuka.effectiveMaxCap}万円
-                </span>
-              </div>
-
-              <div className="space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600">補助対象経費 合計</span>
-                  <span className="font-mono tabular-nums font-semibold text-slate-900">
-                    {evalSummary.jizokuka.eligibleExpense.toLocaleString()} 万円
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600">
-                    補助率（{evalSummary.jizokuka.appliedRateNum}/
-                    {evalSummary.jizokuka.appliedRateDen}）上限適用額
-                  </span>
-                  <span className="font-mono tabular-nums font-bold text-slate-900">
-                    {evalSummary.jizokuka.cappedSubsidy.toLocaleString()} 万円
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-500 pt-1 border-t border-slate-100 leading-relaxed">
-                  {fm.historical.yMinus1.employees <= 20
-                    ? `常時使用する従業員数（${fm.historical.yMinus1.employees}名）は製造業その他20名以下の小規模要件を満たしています（商業・サービス業は5名以下要確認）。`
-                    : `注意: 従業員数（${fm.historical.yMinus1.employees}名）が20名を超えているため、小規模事業者要件の対象外となります。`}
-                </p>
-              </div>
-            </div>
-
-            <div className="pt-2.5 border-t border-slate-200 space-y-1.5 text-xs">
-              <div className="text-[11px] font-semibold text-slate-700">
-                特例上乗せ設定（最大250万円）:
-              </div>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  disabled={inputsDisabled}
-                  checked={flags.jizokukaInvoiceSpecial}
-                  onChange={(e) =>
-                    onUpdateSpecialFlags(project.id, {
-                      jizokukaInvoiceSpecial: e.target.checked,
-                    })
-                  }
-                  className="accent-slate-900"
-                />
-                <span className="text-slate-700">
-                  インボイス特例（＋{thresholds.jizokuka.invoiceSpecialBonus}万円）
-                </span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  disabled={inputsDisabled}
-                  checked={flags.jizokukaWageSpecial}
-                  onChange={(e) =>
-                    onUpdateSpecialFlags(project.id, {
-                      jizokukaWageSpecial: e.target.checked,
-                    })
-                  }
-                  className="accent-slate-900"
-                />
-                <span className="text-slate-700">
-                  賃金引上げ特例（＋{thresholds.jizokuka.wageSpecialBonus}万円）
-                </span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  disabled={inputsDisabled}
-                  checked={flags.jizokukaDeficit}
-                  onChange={(e) =>
-                    onUpdateSpecialFlags(project.id, {
-                      jizokukaDeficit: e.target.checked,
-                    })
-                  }
-                  className="accent-slate-900"
-                />
-                <span className="text-slate-700">
-                  赤字事業者（賃上げ特例併用で補助率3/4）
-                </span>
-              </label>
-            </div>
-          </div>
-
-          {/* Card 3: 東京都経営強化基盤事業 */}
-          <div className="border border-slate-200 p-5 space-y-3 flex flex-col justify-between">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-                <h3 className="text-sm font-bold text-slate-900">
-                  東京都経営強化基盤事業
-                </h3>
-                <span className="px-2 py-0.5 text-[11px] font-semibold text-amber-900 bg-amber-50 border border-amber-300 whitespace-nowrap">
-                  仮設定：対象事業はクライアント確認中
-                </span>
-              </div>
-
-              <div className="space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600">
-                    助成対象経費（機械＋システム）
-                  </span>
-                  <span className="font-mono tabular-nums font-semibold text-slate-900">
-                    {evalSummary.tokyo.eligibleExpense.toLocaleString()} 万円
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600">
-                    助成率（{evalSummary.tokyo.appliedRateNum}/
-                    {evalSummary.tokyo.appliedRateDen}）交付見込額
-                  </span>
-                  <span className="font-mono tabular-nums font-bold text-slate-900">
-                    {evalSummary.tokyo.cappedSubsidy.toLocaleString()} 万円
-                    <span className="text-[11px] font-normal text-slate-500">
-                      （限度 {evalSummary.tokyo.effectiveMaxCap.toLocaleString()}万）
-                    </span>
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-500 pt-1 border-t border-slate-100 leading-relaxed">
-                  想定制度：東京都中小企業振興公社「経営基盤強化支援事業（一般コース）」基準で仮設定。千円未満切捨て（{(evalSummary.tokyo.cappedSubsidy * 10).toLocaleString()}千円）、都内設置・2社以上相見積が必須。
-                </p>
-              </div>
-            </div>
-
-            <div className="pt-2.5 border-t border-slate-200 text-[11px] text-slate-500">
-              ※正式な対象コース確定後、管理者設定から限度額・助成率を差し替え可能です。
-            </div>
+            ) : null}
+            <button
+              type="button"
+              disabled={isLocked || !canEdit}
+              onClick={() => {
+                setTempCurrentFY(fm.autoFiscalCalc.calculatedCurrentFY);
+                setTempBaseFY(fm.autoFiscalCalc.calculatedBaseFY);
+                setShowOverrideModal(true);
+              }}
+              className="px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 transition-colors cursor-pointer"
+            >
+              基準年度の手動変更...
+            </button>
           </div>
         </div>
-      </section>
 
-      {/* SECTION 5 (M3): Subsidy-Specific Format Conversion Preview */}
-      <section
-        data-guide-id="guide-fin-formats"
-        className="bg-white border border-slate-200 p-6 space-y-5"
-      >
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-200 pb-3">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-bold text-slate-900">
-                05. 補助金別 様式換算イメージ
-              </h2>
-              <SpecTagBadge tag="指示書 4-②" />
-            </div>
-            <p className="text-xs text-slate-600 font-medium mt-0.5">
-              様式イメージ（代表的な勘定科目構成による並べ替え表示）— 共通の財務・投資データから二重入力なしで自動変換します。
-            </p>
-          </div>
-
-          {/* 3 Sub-Tabs */}
-          <div className="flex flex-wrap items-center gap-1 bg-slate-100 p-0.5 border border-slate-200">
-            {SUBSIDY_TYPES.map((st) => {
-              const active = formatSubTab === st;
-              return (
+        {/* 3. 従業員数カウント方式 & 1年当たり売上見込額（不一致バッジ含む） */}
+        <div className="mt-2.5 flex flex-wrap items-center justify-between gap-3 text-xs border-t border-slate-100 pt-2.5">
+          <div className="flex flex-wrap items-center gap-4">
+            {/* 従業員数カウント方式 */}
+            <div className="flex items-center gap-1.5">
+              <span className="font-semibold text-slate-700">従業員数の数え方:</span>
+              <div className="inline-flex bg-slate-100 p-0.5 border border-slate-300">
                 <button
-                  key={st}
                   type="button"
-                  onClick={() => setFormatSubTab(st)}
-                  className={`px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
-                    active
+                  disabled={isLocked || !canEdit}
+                  onClick={() => onUpdateEmployeeCountMethod(project.id, 'periodEnd')}
+                  className={`px-2 py-0.5 text-xs font-medium cursor-pointer ${
+                    fm.employeeCountMethod === 'periodEnd'
                       ? 'bg-slate-900 text-white'
                       : 'text-slate-700 hover:text-slate-900'
                   }`}
                 >
-                  {st}
+                  (A) 期末人数方式
                 </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Sub-Tab 1 Extra Table: 新事業進出 付加価値額・給与支給総額 4期計画表 */}
-        {formatSubTab === '新事業進出補助金' && (
-          <div className="space-y-2">
-            <div className="text-xs font-bold text-slate-900">
-              【新事業進出 様式】付加価値額・給与支給総額 算出表（基準年度＋事業化1〜3年目）
+                <button
+                  type="button"
+                  disabled={isLocked || !canEdit}
+                  onClick={() => onUpdateEmployeeCountMethod(project.id, 'koboOfficial')}
+                  className={`px-2 py-0.5 text-xs font-medium cursor-pointer ${
+                    fm.employeeCountMethod === 'koboOfficial'
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-700 hover:text-slate-900'
+                  }`}
+                >
+                  (B) 公募要領方式
+                </button>
+              </div>
+              <span className="text-[11px] text-slate-500">
+                {fm.employeeCountMethod === 'periodEnd'
+                  ? '※期末時点の在籍人数（パートは換算小数可・帳票注記）'
+                  : '※当該年度に全月分の給与を受けた従業員のみ（公募要領準拠・帳票注記）'}
+              </span>
             </div>
-            <div className="overflow-x-auto border border-slate-200">
-              <table className="w-full border-collapse text-left text-xs">
+
+            {/* 1年当たり売上見込額の算出方法 */}
+            <div className="flex items-center gap-1.5">
+              <span className="font-semibold text-slate-700">新製品等1年当たり売上見込額:</span>
+              <select
+                disabled={isLocked || !canEdit}
+                value={fm.annualSalesEstimate.method}
+                onChange={(e) =>
+                  onUpdateAnnualSalesEstimateMethod(
+                    project.id,
+                    e.target.value as AnnualSalesEstimateMethod
+                  )
+                }
+                className="bg-white border border-slate-300 text-xs font-medium px-2 py-0.5"
+              >
+                <option value="planAverage">補助事業売上の計画期間平均（仮）</option>
+                <option value="finalYear">計画最終年度の補助事業売上</option>
+                <option value="manual">手入力指定</option>
+              </select>
+              <span className="text-[10px] px-1 bg-amber-100 text-amber-800 border border-amber-300 font-bold">
+                仮
+              </span>
+              <span className="font-mono font-bold text-slate-900">
+                {formatMoney(
+                  fm.annualSalesEstimate.calculatedValueYen,
+                  displayCurrencyUnit,
+                  roundingMode
+                )}
+              </span>
+            </div>
+          </div>
+
+          {/* 公式インポート 596M vs v36 630M 不一致バッジ */}
+          {fm.annualSalesEstimate.hasMismatch && (
+            <div className="flex items-center gap-2 bg-rose-50 border border-rose-200 px-2.5 py-1 text-[11px] text-rose-800">
+              <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+              <span>
+                <strong>不一致・要確認:</strong> インポート用フォーマット:{' '}
+                <span className="font-mono font-bold">596,000,000円</span> vs v36収益計画:{' '}
+                <span className="font-mono font-bold">630,000,000円</span>
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 2. Navigation Tabs (要件判定サマリー / 損益計算書PL / 貸借対照表BS / 投資計画) */}
+      <div className="flex items-center gap-2 border-b border-slate-300 pb-px">
+        <button
+          type="button"
+          onClick={() => setActiveTab('summary')}
+          className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+            activeTab === 'summary'
+              ? 'border-blue-600 text-blue-800 bg-white'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Scale className="w-3.5 h-3.5" />
+          <span>公募要件・規模上限判定サマリー</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('pl')}
+          className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+            activeTab === 'pl'
+              ? 'border-blue-600 text-blue-800 bg-white'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <PieChart className="w-3.5 h-3.5" />
+          <span>損益計算書（既存事業／補助事業分割・全社計）</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('bs')}
+          className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+            activeTab === 'bs'
+              ? 'border-blue-600 text-blue-800 bg-white'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Building className="w-3.5 h-3.5" />
+          <span>貸借対照表（公式インポートフォーマット準拠）</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('investment')}
+          className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+            activeTab === 'investment'
+              ? 'border-blue-600 text-blue-800 bg-white'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Settings className="w-3.5 h-3.5" />
+          <span>設備投資計画・資金調達内訳</span>
+        </button>
+      </div>
+
+      {/* 3. Tab Contents */}
+
+      {/* TAB 1: 要件判定サマリー */}
+      {activeTab === 'summary' && (
+        <div className="space-y-5">
+          {/* Top Metric Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            {/* 1. 付加価値額CAGR */}
+            <div className="bg-white border border-slate-200 p-4">
+              <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
+                <span className="font-semibold">付加価値額 CAGR</span>
+                {evalResult.isVAPassed ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5">
+                    <CheckCircle2 className="w-3 h-3" /> 要件クリア
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5">
+                    <AlertCircle className="w-3 h-3" /> 未達
+                  </span>
+                )}
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold font-mono text-slate-900">
+                  {evalResult.vaCAGR.toFixed(2)}%
+                </span>
+                <span className="text-xs text-slate-500">
+                  / 要件: {activeCallRound.requirements.valueAddedCAGR}%以上
+                </span>
+              </div>
+              <div className="mt-2 text-[11px] text-slate-600 flex items-center justify-between border-t border-slate-100 pt-1.5">
+                <span>ほどよく範囲 (4.0〜5.0%):</span>
+                {evalResult.isVAModerate ? (
+                  <span className="text-emerald-700 font-semibold">範囲内（安全）</span>
+                ) : (
+                  <span className="text-amber-700 font-semibold">範囲外（要調整）</span>
+                )}
+              </div>
+              <div className="mt-1 text-[10px] text-slate-400">
+                基準: {formatMoney(evalResult.baseValueAdded, displayCurrencyUnit, roundingMode)} → 目標:{' '}
+                {formatMoney(evalResult.targetValueAdded, displayCurrencyUnit, roundingMode)}
+              </div>
+            </div>
+
+            {/* 2. 一人当たり給与CAGR */}
+            <div className="bg-white border border-slate-200 p-4">
+              <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
+                <span className="font-semibold">一人当たり給与 CAGR</span>
+                {evalResult.isWagePassed ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5">
+                    <CheckCircle2 className="w-3 h-3" /> 要件クリア
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5">
+                    <AlertCircle className="w-3 h-3" /> 未達
+                  </span>
+                )}
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold font-mono text-slate-900">
+                  {evalResult.wageCAGR.toFixed(2)}%
+                </span>
+                <span className="text-xs text-slate-500">
+                  / 要件:{' '}
+                  {fm.isWageSpecialApplied
+                    ? activeCallRound.requirements.wageSpecialCAGR
+                    : activeCallRound.requirements.wageCAGR}
+                  %以上
+                </span>
+              </div>
+              <div className="mt-2 text-[11px] text-slate-600 flex items-center justify-between border-t border-slate-100 pt-1.5">
+                <span>
+                  ほどよく範囲 ({fm.isWageSpecialApplied ? '6.0〜7.0%' : '3.5〜4.5%'}):
+                </span>
+                {evalResult.isWageModerate ? (
+                  <span className="text-emerald-700 font-semibold">範囲内（安全）</span>
+                ) : (
+                  <span className="text-amber-700 font-semibold">範囲外（要調整）</span>
+                )}
+              </div>
+              <div className="mt-1 text-[10px] text-slate-400">
+                基準: {formatMoney(evalResult.basePerCapitaWage, 'yen', roundingMode)} → 目標:{' '}
+                {formatMoney(evalResult.targetPerCapitaWage, 'yen', roundingMode)}
+              </div>
+            </div>
+
+            {/* 3. 事業場内最低賃金 */}
+            <div className="bg-white border border-slate-200 p-4">
+              <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
+                <span className="font-semibold">事業場内 最低賃金</span>
+                {evalResult.isMinWagePassed ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5">
+                    <CheckCircle2 className="w-3 h-3" /> 要件クリア
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5">
+                    <AlertCircle className="w-3 h-3" /> 未達
+                  </span>
+                )}
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold font-mono text-slate-900">
+                  {evalResult.workplaceMinWage.toLocaleString()}円
+                </span>
+                <span className="text-xs text-slate-500">
+                  (+{evalResult.minWageDiff}円)
+                </span>
+              </div>
+              <div className="mt-2 text-[11px] text-slate-600 flex items-center justify-between border-t border-slate-100 pt-1.5">
+                <span>地域別最賃:</span>
+                <span className="font-mono">{evalResult.regionalMinWage.toLocaleString()}円</span>
+              </div>
+              <div className="mt-1 text-[10px] text-slate-500">
+                要件: 地域別 +
+                {fm.isWageSpecialApplied
+                  ? activeCallRound.requirements.wageSpecialMinWageDiffYen
+                  : activeCallRound.requirements.minWageDiffYen}
+                円以上
+              </div>
+            </div>
+
+            {/* 4. 足下の賃上げ（物価上昇率との対比） */}
+            <div className="bg-white border border-slate-200 p-4">
+              <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
+                <span className="font-semibold">足下の賃上げ（物価対比）</span>
+                {evalResult.isNearTermWagePassed ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5">
+                    <CheckCircle2 className="w-3 h-3" /> 達成
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5">
+                    <AlertCircle className="w-3 h-3" /> 未達
+                  </span>
+                )}
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold font-mono text-slate-900">
+                  {evalResult.nearTermWageGrowthRate.toFixed(2)}%
+                </span>
+                <span className="text-xs text-slate-500">
+                  / 物価: {evalResult.inflationRate.toFixed(1)}%
+                </span>
+              </div>
+              <div className="mt-2 text-[11px] text-slate-600 flex items-center justify-between border-t border-slate-100 pt-1.5">
+                <span>物価上昇率（仮値）:</span>
+                <span className="font-bold text-slate-800">2.0%</span>
+              </div>
+              <div className="mt-1 text-[10px] text-slate-400">
+                直近({formatMoney(evalResult.y0PerCapitaWage, 'yen', roundingMode)}) → 基準年度(
+                {formatMoney(evalResult.baseFYPerCapitaWage, 'yen', roundingMode)})
+              </div>
+            </div>
+          </div>
+
+          {/* 規模区分別上限・下限・申請額チェック表 */}
+          <div className="bg-white border border-slate-200 p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-900">
+                【{appliedTrack.name}】従業員規模別 補助金交付限度額判定
+              </h3>
+              <span className="text-xs text-slate-500">
+                基準年度従業員数: <strong>{fm.periods.baseFY.pl.numberOfEmployees}名</strong>（
+                {evalResult.applicableCapTier?.label || '判定中'}）
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left border-collapse">
                 <thead>
-                  <tr className="bg-slate-100 border-b border-slate-200 font-semibold text-slate-700">
-                    <th className="py-2 px-3">申請様式 算出項目</th>
-                    <th className="py-2 px-3 text-right">基準年度（直前期）</th>
-                    <th className="py-2 px-3 text-right">1年目（Y1）</th>
-                    <th className="py-2 px-3 text-right">2年目（Y2）</th>
-                    <th className="py-2 px-3 text-right">3年目（Y3）</th>
-                    <th className="py-2 px-3 text-right">年平均成長率</th>
+                  <tr className="bg-slate-100 text-slate-700 border-y border-slate-200">
+                    <th className="py-2.5 px-3">従業員規模</th>
+                    <th className="py-2.5 px-3">通常補助上限額</th>
+                    <th className="py-2.5 px-3">賃上げ特例時上限額</th>
+                    <th className="py-2.5 px-3">補助率</th>
+                    <th className="py-2.5 px-3">貴社適用上限額</th>
+                    <th className="py-2.5 px-3">総投資額</th>
+                    <th className="py-2.5 px-3">補助金交付申請額</th>
+                    <th className="py-2.5 px-3">判定結果</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-200 font-mono tabular-nums">
-                  <tr className="bg-slate-50 font-semibold">
-                    <td className="py-2 px-3 font-sans">
-                      付加価値額（営業利益＋人件費＋減価償却費）
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {fm.historical.yMinus1.valueAdded.toLocaleString()} 万円
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {fm.forecast.y1.valueAdded.toLocaleString()} 万円
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {fm.forecast.y2.valueAdded.toLocaleString()} 万円
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {fm.forecast.y3.valueAdded.toLocaleString()} 万円
-                    </td>
-                    <td className="py-2 px-3 text-right text-emerald-900 font-bold">
-                      {evalSummary.vaGrowthAnnual}%
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 px-3 font-sans text-slate-600 pl-6">
-                      うち営業利益 / 人件費 / 減価償却費
-                    </td>
-                    <td className="py-2 px-3 text-right text-slate-600">
-                      {fm.historical.yMinus1.operatingProfit} /{' '}
-                      {fm.historical.yMinus1.laborCost} /{' '}
-                      {fm.historical.yMinus1.depreciation}
-                    </td>
-                    <td className="py-2 px-3 text-right text-slate-600">
-                      {fm.forecast.y1.operatingProfit} /{' '}
-                      {fm.forecast.y1.laborCost} / {fm.forecast.y1.depreciation}
-                    </td>
-                    <td className="py-2 px-3 text-right text-slate-600">
-                      {fm.forecast.y2.operatingProfit} /{' '}
-                      {fm.forecast.y2.laborCost} / {fm.forecast.y2.depreciation}
-                    </td>
-                    <td className="py-2 px-3 text-right text-slate-600">
-                      {fm.forecast.y3.operatingProfit} /{' '}
-                      {fm.forecast.y3.laborCost} / {fm.forecast.y3.depreciation}
-                    </td>
-                    <td className="py-2 px-3 text-right text-slate-400">―</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 px-3 font-sans">給与支給総額</td>
-                    <td className="py-2 px-3 text-right">
-                      {fm.historical.yMinus1.totalWages.toLocaleString()} 万円
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {fm.forecast.y1.totalWages.toLocaleString()} 万円
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {fm.forecast.y2.totalWages.toLocaleString()} 万円
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {fm.forecast.y3.totalWages.toLocaleString()} 万円
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {evalSummary.wageGrowthAnnual}%
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 px-3 font-sans">従業員数</td>
-                    <td className="py-2 px-3 text-right">
-                      {fm.historical.yMinus1.employees} 名
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {fm.forecast.y1.employees} 名
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {fm.forecast.y2.employees} 名
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {fm.forecast.y3.employees} 名
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      +{fm.forecast.y3.employees - fm.historical.yMinus1.employees}名
-                    </td>
-                  </tr>
-                  <tr className="bg-slate-50 font-semibold">
-                    <td className="py-2 px-3 font-sans">
-                      一人当たり給与支給総額
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {calculatePerCapitaWage(fm.historical.yMinus1).toFixed(1)}{' '}
-                      万円
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {calculatePerCapitaWage(fm.forecast.y1).toFixed(1)} 万円
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {calculatePerCapitaWage(fm.forecast.y2).toFixed(1)} 万円
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      {calculatePerCapitaWage(fm.forecast.y3).toFixed(1)} 万円
-                    </td>
-                    <td className="py-2 px-3 text-right text-emerald-900 font-bold">
-                      {evalSummary.perCapitaWageGrowthAnnual}%
-                    </td>
-                  </tr>
+                <tbody className="divide-y divide-slate-200">
+                  {appliedTrack.capTiers.map((tier) => {
+                    const isCurrentTier = evalResult.applicableCapTier?.id === tier.id;
+                    return (
+                      <tr
+                        key={tier.id}
+                        className={isCurrentTier ? 'bg-blue-50/70 font-semibold text-slate-900' : 'text-slate-600'}
+                      >
+                        <td className="py-2.5 px-3 flex items-center gap-1.5">
+                          {isCurrentTier && (
+                            <span className="w-2 h-2 rounded-full bg-blue-600 shrink-0" />
+                          )}
+                          <span>{tier.label}</span>
+                        </td>
+                        <td className="py-2.5 px-3 font-mono">
+                          {formatMoney(tier.standardCapYen, displayCurrencyUnit, roundingMode)}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono">
+                          {formatMoney(tier.wageSpecialCapYen, displayCurrencyUnit, roundingMode)}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          {appliedTrack.subsidyRateNumerator}/{appliedTrack.subsidyRateDenominator}
+                          {fm.isWageSpecialApplied && appliedTrack.wageSpecialRateNumerator ? (
+                            <span className="text-blue-700 ml-1 font-bold">
+                              （特例 {appliedTrack.wageSpecialRateNumerator}/
+                              {appliedTrack.wageSpecialRateDenominator}）
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
+                          {isCurrentTier
+                            ? formatMoney(evalResult.effectiveCapYen, displayCurrencyUnit, roundingMode)
+                            : '-'}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono">
+                          {isCurrentTier
+                            ? formatMoney(evalResult.totalInvestmentYen, displayCurrencyUnit, roundingMode)
+                            : '-'}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono font-bold text-blue-800">
+                          {isCurrentTier
+                            ? formatMoney(evalResult.subsidyRequestedYen, displayCurrencyUnit, roundingMode)
+                            : '-'}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          {isCurrentTier ? (
+                            evalResult.isSubsidyWithinCap && evalResult.isMinSubsidyPassed ? (
+                              <span className="text-emerald-700 font-bold">上限内・下限クリア</span>
+                            ) : !evalResult.isMinSubsidyPassed ? (
+                              <span className="text-rose-700 font-bold">下限（750万円）未達</span>
+                            ) : (
+                              <span className="text-rose-700 font-bold">上限超過</span>
+                            )
+                          ) : (
+                            '-'
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Expense Breakdown Table Mapped per Subsidy */}
-        <div className="space-y-2">
-          <div className="text-xs font-bold text-slate-900">
-            【{formatSubTab}】経費区分別 積算明細・交付申請額シミュレーション
+      {/* TAB 2: 損益計算書 (PL) */}
+      {activeTab === 'pl' && (
+        <div className="bg-white border border-slate-200 p-4 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="text-xs font-bold text-slate-800">損益計算書 表示切替:</span>
+              <div className="inline-flex bg-slate-100 p-0.5 border border-slate-300 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setPlSegmentView('split')}
+                  className={`px-3 py-1 font-medium cursor-pointer ${
+                    plSegmentView === 'split' ? 'bg-slate-900 text-white' : 'text-slate-600'
+                  }`}
+                >
+                  既存事業／補助事業 分割明細
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPlSegmentView('total')}
+                  className={`px-3 py-1 font-medium cursor-pointer ${
+                    plSegmentView === 'total' ? 'bg-slate-900 text-white' : 'text-slate-600'
+                  }`}
+                >
+                  全社合算計のみ
+                </button>
+              </div>
+            </div>
+
+            <div className="text-xs text-slate-500">
+              ※金額単位: <strong className="text-slate-800">{getUnitLabel(displayCurrencyUnit)}</strong>（
+              {roundingMode === 'floor' ? '切り捨て' : '四捨五入'}）
+            </div>
           </div>
-          <div className="overflow-x-auto border border-slate-200">
-            <table className="w-full border-collapse text-left text-xs">
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left border-collapse border border-slate-200">
               <thead>
-                <tr className="bg-slate-100 border-b border-slate-200 font-semibold text-slate-700">
-                  <th className="py-2.5 px-3">制度指定の経費区分名</th>
-                  <th className="py-2.5 px-3">マスター投資区分の割当元</th>
-                  <th className="py-2.5 px-3 text-right">金額（税抜）</th>
-                  <th className="py-2.5 px-3">対象区分</th>
-                  <th className="py-2.5 px-3">様式記載上の留意点</th>
+                <tr className="bg-slate-800 text-white divide-x divide-slate-700">
+                  <th className="py-2.5 px-3 min-w-[220px]">勘定科目 / 期</th>
+                  {visiblePeriods.map((p) => {
+                    const info = fm.periods[p.key]?.fiscalInfo;
+                    return (
+                      <th
+                        key={p.key}
+                        className={`py-2 px-3 text-right min-w-[125px] ${
+                          p.isBase ? 'bg-blue-900 text-blue-100' : ''
+                        }`}
+                      >
+                        <div className="font-bold">{p.label}</div>
+                        <div className="text-[10px] opacity-80">{p.subLabel}</div>
+                        {info?.isIrregular && (
+                          <div className="text-[10px] text-amber-300 font-bold">
+                            変則（{info.periodMonths}か月）
+                          </div>
+                        )}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {mappedExpenseRows.map((r) => (
-                  <tr key={r.id} className="hover:bg-slate-50/50">
-                    <td className="py-2.5 px-3 font-bold text-slate-900">
-                      {r.subsidyCategoryName}
+                {/* 1. 売上高 */}
+                <tr className="bg-slate-100/70 font-bold text-slate-900">
+                  <td className="py-2 px-3">■ 売上高（全社計）</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-2 px-3 text-right font-mono">
+                      {formatMoney(fm.periods[p.key]?.pl.totalSales, displayCurrencyUnit, roundingMode, false)}
                     </td>
-                    <td className="py-2.5 px-3 text-slate-600">
-                      {r.sourceLabel}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono tabular-nums font-semibold text-slate-900">
-                      {r.amountManYen.toLocaleString()} 万円
-                    </td>
-                    <td className="py-2.5 px-3 whitespace-nowrap">
-                      {r.isEligible ? (
-                        <span className="px-2 py-0.5 text-[11px] font-semibold bg-emerald-50 text-emerald-900 border border-emerald-300">
-                          補助・助成対象
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-300">
-                          対象外（自己負担）
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2.5 px-3 text-slate-600">{r.note}</td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot className="bg-slate-50 border-t border-slate-300 font-semibold text-xs">
-                <tr>
-                  <td colSpan={2} className="py-3 px-3 text-slate-900">
-                    {formatSubTab} 交付見込額（制度上限・補助率適用後）
-                  </td>
-                  <td className="py-3 px-3 text-right font-mono tabular-nums text-sm font-bold text-slate-900">
-                    {formatSubTab === '新事業進出補助金'
-                      ? `${evalSummary.shinJigyo.cappedSubsidy.toLocaleString()} 万円`
-                      : formatSubTab === '小規模事業者持続化補助金'
-                        ? `${evalSummary.jizokuka.cappedSubsidy.toLocaleString()} 万円`
-                        : `${evalSummary.tokyo.cappedSubsidy.toLocaleString()} 万円`}
-                  </td>
-                  <td colSpan={2} className="py-3 px-3 text-slate-600 font-normal">
-                    {formatSubTab === '新事業進出補助金' &&
-                      `対象経費 ${evalSummary.shinJigyo.eligibleExpense.toLocaleString()}万円 × ${evalSummary.shinJigyo.appliedRateNum}/${evalSummary.shinJigyo.appliedRateDen}（区分上限 ${evalSummary.shinJigyo.effectiveMaxCap.toLocaleString()}万円・下限 ${evalSummary.shinJigyo.minSubsidyAmount.toLocaleString()}万円）`}
-                    {formatSubTab === '小規模事業者持続化補助金' &&
-                      `対象経費 ${evalSummary.jizokuka.eligibleExpense.toLocaleString()}万円 × ${evalSummary.jizokuka.appliedRateNum}/${evalSummary.jizokuka.appliedRateDen}（特例反映上限 ${evalSummary.jizokuka.effectiveMaxCap.toLocaleString()}万円）`}
-                    {formatSubTab === '東京都経営強化基盤事業' &&
-                      `対象経費 ${evalSummary.tokyo.eligibleExpense.toLocaleString()}万円 × ${evalSummary.tokyo.appliedRateNum}/${evalSummary.tokyo.appliedRateDen}（助成限度額 ${evalSummary.tokyo.effectiveMaxCap.toLocaleString()}万円）`}
-                  </td>
+                  ))}
                 </tr>
-              </tfoot>
+                {plSegmentView === 'split' && (
+                  <>
+                    <tr className="text-slate-600 text-[11px]">
+                      <td className="py-1.5 px-5 pl-6">└ 既存事業 売上高</td>
+                      {visiblePeriods.map((p) => (
+                        <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                          <input
+                            type="text"
+                            disabled={isLocked || !canEdit}
+                            defaultValue={formatMoney(
+                              fm.periods[p.key]?.pl.existingBusiness.sales,
+                              displayCurrencyUnit,
+                              roundingMode,
+                              false
+                            )}
+                            onBlur={(e) =>
+                              handleCellChange(e.target.value, (yen) =>
+                                onUpdatePLItem(project.id, p.key, 'existingBusiness', 'sales', yen)
+                              )
+                            }
+                            className="w-full text-right bg-white border border-slate-200 px-1 py-0.5 focus:border-blue-600"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="text-blue-700 bg-blue-50/40 text-[11px] font-semibold">
+                      <td className="py-1.5 px-5 pl-6">└ 補助事業 売上高（新製品・新事業）</td>
+                      {visiblePeriods.map((p) => (
+                        <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                          <input
+                            type="text"
+                            disabled={isLocked || !canEdit}
+                            defaultValue={formatMoney(
+                              fm.periods[p.key]?.pl.subsidyBusiness.sales,
+                              displayCurrencyUnit,
+                              roundingMode,
+                              false
+                            )}
+                            onBlur={(e) =>
+                              handleCellChange(e.target.value, (yen) =>
+                                onUpdatePLItem(project.id, p.key, 'subsidyBusiness', 'sales', yen)
+                              )
+                            }
+                            className="w-full text-right bg-white border border-blue-200 px-1 py-0.5 focus:border-blue-600 text-blue-900"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  </>
+                )}
+
+                {/* 2. 売上原価 */}
+                <tr className="bg-slate-100/70 font-bold text-slate-900">
+                  <td className="py-2 px-3">■ 売上原価（全社計）</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-2 px-3 text-right font-mono">
+                      {formatMoney(fm.periods[p.key]?.pl.totalCostOfSales, displayCurrencyUnit, roundingMode, false)}
+                    </td>
+                  ))}
+                </tr>
+                {plSegmentView === 'split' && (
+                  <>
+                    <tr className="text-slate-600 text-[11px]">
+                      <td className="py-1.5 px-5 pl-6">└ 既存事業 売上原価</td>
+                      {visiblePeriods.map((p) => (
+                        <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                          <input
+                            type="text"
+                            disabled={isLocked || !canEdit}
+                            defaultValue={formatMoney(
+                              fm.periods[p.key]?.pl.existingBusiness.costOfSales,
+                              displayCurrencyUnit,
+                              roundingMode,
+                              false
+                            )}
+                            onBlur={(e) =>
+                              handleCellChange(e.target.value, (yen) =>
+                                onUpdatePLItem(project.id, p.key, 'existingBusiness', 'costOfSales', yen)
+                              )
+                            }
+                            className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="text-slate-600 text-[11px]">
+                      <td className="py-1.5 px-5 pl-6">└ 補助事業 売上原価</td>
+                      {visiblePeriods.map((p) => (
+                        <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                          <input
+                            type="text"
+                            disabled={isLocked || !canEdit}
+                            defaultValue={formatMoney(
+                              fm.periods[p.key]?.pl.subsidyBusiness.costOfSales,
+                              displayCurrencyUnit,
+                              roundingMode,
+                              false
+                            )}
+                            onBlur={(e) =>
+                              handleCellChange(e.target.value, (yen) =>
+                                onUpdatePLItem(project.id, p.key, 'subsidyBusiness', 'costOfSales', yen)
+                              )
+                            }
+                            className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  </>
+                )}
+
+                {/* 3. 売上総利益 */}
+                <tr className="bg-slate-50 font-semibold text-slate-800">
+                  <td className="py-2 px-3">■ 売上総利益（粗利）</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-2 px-3 text-right font-mono">
+                      {formatMoney(fm.periods[p.key]?.pl.totalGrossProfit, displayCurrencyUnit, roundingMode, false)}
+                    </td>
+                  ))}
+                </tr>
+
+                {/* 4. 販管費 */}
+                <tr className="bg-slate-100/70 font-bold text-slate-900">
+                  <td className="py-2 px-3">■ 販売費及び一般管理費（全社計）</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-2 px-3 text-right font-mono">
+                      {formatMoney(fm.periods[p.key]?.pl.totalSga, displayCurrencyUnit, roundingMode, false)}
+                    </td>
+                  ))}
+                </tr>
+
+                {/* 5. 営業利益 */}
+                <tr className="bg-blue-50/60 font-bold text-blue-900 border-y border-blue-200">
+                  <td className="py-2.5 px-3">★ 営業利益</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-2.5 px-3 text-right font-mono text-sm">
+                      {formatMoney(fm.periods[p.key]?.pl.totalOperatingProfit, displayCurrencyUnit, roundingMode, false)}
+                    </td>
+                  ))}
+                </tr>
+
+                {/* 6. 人件費・減価償却費・付加価値額 */}
+                <tr className="text-slate-700">
+                  <td className="py-1.5 px-3 font-semibold">人件費（労務費・役員報酬等含）</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                      <input
+                        type="text"
+                        disabled={isLocked || !canEdit}
+                        defaultValue={formatMoney(
+                          fm.periods[p.key]?.pl.laborCost,
+                          displayCurrencyUnit,
+                          roundingMode,
+                          false
+                        )}
+                        onBlur={(e) =>
+                          handleCellChange(e.target.value, (yen) =>
+                            onUpdatePLItem(project.id, p.key, 'root', 'laborCost', yen)
+                          )
+                        }
+                        className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
+                      />
+                    </td>
+                  ))}
+                </tr>
+                <tr className="text-slate-700">
+                  <td className="py-1.5 px-3 font-semibold">減価償却費</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                      <input
+                        type="text"
+                        disabled={isLocked || !canEdit}
+                        defaultValue={formatMoney(
+                          fm.periods[p.key]?.pl.depreciation,
+                          displayCurrencyUnit,
+                          roundingMode,
+                          false
+                        )}
+                        onBlur={(e) =>
+                          handleCellChange(e.target.value, (yen) =>
+                            onUpdatePLItem(project.id, p.key, 'root', 'depreciation', yen)
+                          )
+                        }
+                        className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
+                      />
+                    </td>
+                  ))}
+                </tr>
+
+                {/* 付加価値額 */}
+                <tr className="bg-emerald-50/70 font-bold text-emerald-950 border-y-2 border-emerald-300">
+                  <td className="py-2.5 px-3">
+                    ★ 付加価値額（営業利益 ＋ 人件費 ＋ 減価償却費）
+                  </td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-2.5 px-3 text-right font-mono text-sm">
+                      {formatMoney(fm.periods[p.key]?.pl.valueAdded, displayCurrencyUnit, roundingMode, false)}
+                    </td>
+                  ))}
+                </tr>
+
+                {/* 従業員数・給与・最低賃金 */}
+                <tr className="text-slate-700 bg-slate-50/50">
+                  <td className="py-1.5 px-3 font-semibold">
+                    従業員数（{fm.employeeCountMethod === 'periodEnd' ? '期末人数' : '公募要領'}）
+                  </td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                      <input
+                        type="number"
+                        disabled={isLocked || !canEdit}
+                        defaultValue={fm.periods[p.key]?.pl.numberOfEmployees}
+                        onBlur={(e) =>
+                          onUpdatePLItem(
+                            project.id,
+                            p.key,
+                            'root',
+                            'numberOfEmployees',
+                            Number(e.target.value) || 0
+                          )
+                        }
+                        className="w-16 text-right bg-white border border-slate-200 px-1 py-0.5"
+                      />
+                      <span className="ml-1 text-[10px] text-slate-500">名</span>
+                    </td>
+                  ))}
+                </tr>
+
+                <tr className="text-slate-700">
+                  <td className="py-1.5 px-3 font-semibold">給与支給総額</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                      <input
+                        type="text"
+                        disabled={isLocked || !canEdit}
+                        defaultValue={formatMoney(
+                          fm.periods[p.key]?.pl.totalWages,
+                          displayCurrencyUnit,
+                          roundingMode,
+                          false
+                        )}
+                        onBlur={(e) =>
+                          handleCellChange(e.target.value, (yen) =>
+                            onUpdatePLItem(project.id, p.key, 'root', 'totalWages', yen)
+                          )
+                        }
+                        className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
+                      />
+                    </td>
+                  ))}
+                </tr>
+
+                <tr className="text-slate-800 font-semibold bg-slate-100/50">
+                  <td className="py-1.5 px-3">一人当たり給与支給総額（給与総額÷人数）</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                      {formatMoney(fm.periods[p.key]?.pl.perCapitaWage, 'yen', roundingMode)}
+                    </td>
+                  ))}
+                </tr>
+
+                <tr className="text-slate-700">
+                  <td className="py-1.5 px-3">事業場内 最低賃金</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                      <input
+                        type="number"
+                        disabled={isLocked || !canEdit}
+                        defaultValue={fm.periods[p.key]?.pl.workplaceMinWage}
+                        onBlur={(e) =>
+                          onUpdatePLItem(
+                            project.id,
+                            p.key,
+                            'root',
+                            'workplaceMinWage',
+                            Number(e.target.value) || 0
+                          )
+                        }
+                        className="w-20 text-right bg-white border border-slate-200 px-1 py-0.5"
+                      />
+                      <span className="ml-0.5 text-[10px] text-slate-500">円</span>
+                    </td>
+                  ))}
+                </tr>
+
+                <tr className="text-slate-700">
+                  <td className="py-1.5 px-3">地域別 最低賃金（手入力）</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                      <input
+                        type="number"
+                        disabled={isLocked || !canEdit}
+                        defaultValue={fm.periods[p.key]?.pl.regionalMinWage}
+                        onBlur={(e) =>
+                          onUpdatePLItem(
+                            project.id,
+                            p.key,
+                            'root',
+                            'regionalMinWage',
+                            Number(e.target.value) || 0
+                          )
+                        }
+                        className="w-20 text-right bg-white border border-slate-200 px-1 py-0.5"
+                      />
+                      <span className="ml-0.5 text-[10px] text-slate-500">円</span>
+                    </td>
+                  ))}
+                </tr>
+              </tbody>
             </table>
           </div>
         </div>
-      </section>
+      )}
 
-      {/* SECTION 6: Gate 2 Lock / Unlock Action Footer */}
-      <section
-        data-guide-id="guide-fin-lock"
-        className={`border p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 ${
-          isLocked
-            ? 'bg-emerald-50/40 border-emerald-300'
-            : 'bg-slate-900 text-white border-slate-900'
-        }`}
-      >
-        <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={`text-base font-bold ${
-                isLocked ? 'text-slate-900' : 'text-white'
-              }`}
-            >
-              {isLocked
-                ? 'Gate 2 通過済：収支計画マスターは確定ロックされています'
-                : '06. 収支計画マスターの確定（Gate 2 解除）'}
+      {/* TAB 3: 貸借対照表 (BS) */}
+      {activeTab === 'bs' && (
+        <div className="bg-white border border-slate-200 p-4 space-y-4">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-bold text-slate-800">
+              貸借対照表（公式インポート用フォーマット行ラベル準拠）
             </span>
-            <SpecTagBadge tag="指示書 Step6" />
+            <div className="text-slate-500">
+              金額単位: <strong className="text-slate-800">{getUnitLabel(displayCurrencyUnit)}</strong>
+            </div>
           </div>
-          <p
-            className={`text-xs leading-relaxed ${
-              isLocked ? 'text-slate-600' : 'text-slate-300'
-            }`}
-          >
-            {isLocked
-              ? `確定日時: ${fm.lockedAt} · この数値計画を正として「04. 申請書 作成・編集」および「05. 整合性チェック」を実行できます。`
-              : '手戻りを防止するため、収支計画を確定（Gate 2通過）すると申請書作成・編集画面の厳格ロックが解除されます。'}
-          </p>
-        </div>
 
-        <div className="flex flex-wrap items-center gap-3 shrink-0">
-          {isLocked ? (
-            <>
-              <button
-                type="button"
-                disabled={!canConfirmG2}
-                onClick={handleUnlock}
-                className="px-4 py-2.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-50 transition-colors whitespace-nowrap cursor-pointer"
-              >
-                再編集（ロック解除）
-              </button>
-              <button
-                type="button"
-                onClick={onNavigateToEditor}
-                className="px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
-              >
-                申請書 作成・編集画面へ進む →
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              disabled={!canConfirmG2}
-              onClick={handleConfirmLock}
-              className="px-6 py-2.5 text-sm font-semibold text-slate-900 bg-white hover:bg-slate-100 disabled:opacity-50 transition-colors whitespace-nowrap cursor-pointer"
-            >
-              この収支計画で確定する（Gate 2 通過）
-            </button>
-          )}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left border-collapse border border-slate-200">
+              <thead>
+                <tr className="bg-slate-800 text-white divide-x divide-slate-700">
+                  <th className="py-2.5 px-3 min-w-[240px]">BS科目 / 期</th>
+                  {visiblePeriods.map((p) => (
+                    <th
+                      key={p.key}
+                      className={`py-2 px-3 text-right min-w-[120px] ${
+                        p.isBase ? 'bg-blue-900 text-blue-100' : ''
+                      }`}
+                    >
+                      <div>{p.label}</div>
+                      <div className="text-[10px] opacity-80">{p.subLabel}</div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {/* 流動資産合計 */}
+                <tr className="bg-slate-100 font-bold text-slate-900 cursor-pointer" onClick={() => toggleSection('currentAssets')}>
+                  <td className="py-2 px-3 flex items-center gap-1">
+                    {expandedSections.currentAssets ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                    【流動資産合計】
+                  </td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-2 px-3 text-right font-mono">
+                      {formatMoney(fm.periods[p.key]?.bs.currentAssets.totalCurrentAssets, displayCurrencyUnit, roundingMode, false)}
+                    </td>
+                  ))}
+                </tr>
+                {expandedSections.currentAssets && (
+                  <>
+                    <tr className="text-[11px] text-slate-600">
+                      <td className="py-1 px-5 pl-6">現金及び預金</td>
+                      {visiblePeriods.map((p) => (
+                        <td key={p.key} className="py-1 px-3 text-right font-mono">
+                          <input
+                            type="text"
+                            disabled={isLocked || !canEdit}
+                            defaultValue={formatMoney(
+                              fm.periods[p.key]?.bs.currentAssets.cashAndDeposits,
+                              displayCurrencyUnit,
+                              roundingMode,
+                              false
+                            )}
+                            onBlur={(e) =>
+                              handleCellChange(e.target.value, (yen) =>
+                                onUpdateBSItem(project.id, p.key, ['currentAssets', 'cashAndDeposits'], yen)
+                              )
+                            }
+                            className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="text-[11px] text-slate-600">
+                      <td className="py-1 px-5 pl-6">売掛金</td>
+                      {visiblePeriods.map((p) => (
+                        <td key={p.key} className="py-1 px-3 text-right font-mono">
+                          <input
+                            type="text"
+                            disabled={isLocked || !canEdit}
+                            defaultValue={formatMoney(
+                              fm.periods[p.key]?.bs.currentAssets.accountsReceivable,
+                              displayCurrencyUnit,
+                              roundingMode,
+                              false
+                            )}
+                            onBlur={(e) =>
+                              handleCellChange(e.target.value, (yen) =>
+                                onUpdateBSItem(project.id, p.key, ['currentAssets', 'accountsReceivable'], yen)
+                              )
+                            }
+                            className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="text-[11px] text-slate-600">
+                      <td className="py-1 px-5 pl-6">棚卸資産</td>
+                      {visiblePeriods.map((p) => (
+                        <td key={p.key} className="py-1 px-3 text-right font-mono">
+                          <input
+                            type="text"
+                            disabled={isLocked || !canEdit}
+                            defaultValue={formatMoney(
+                              fm.periods[p.key]?.bs.currentAssets.inventories,
+                              displayCurrencyUnit,
+                              roundingMode,
+                              false
+                            )}
+                            onBlur={(e) =>
+                              handleCellChange(e.target.value, (yen) =>
+                                onUpdateBSItem(project.id, p.key, ['currentAssets', 'inventories'], yen)
+                              )
+                            }
+                            className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  </>
+                )}
+
+                {/* 固定資産合計 */}
+                <tr className="bg-slate-100 font-bold text-slate-900 cursor-pointer" onClick={() => toggleSection('tangible')}>
+                  <td className="py-2 px-3 flex items-center gap-1">
+                    {expandedSections.tangible ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                    【固定資産合計】
+                  </td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-2 px-3 text-right font-mono">
+                      {formatMoney(fm.periods[p.key]?.bs.fixedAssets.totalFixedAssets, displayCurrencyUnit, roundingMode, false)}
+                    </td>
+                  ))}
+                </tr>
+                {expandedSections.tangible && (
+                  <>
+                    <tr className="text-[11px] text-slate-600">
+                      <td className="py-1 px-5 pl-6">機械及び装置</td>
+                      {visiblePeriods.map((p) => (
+                        <td key={p.key} className="py-1 px-3 text-right font-mono">
+                          <input
+                            type="text"
+                            disabled={isLocked || !canEdit}
+                            defaultValue={formatMoney(
+                              fm.periods[p.key]?.bs.fixedAssets.tangibleFixedAssets.machineryAndEquipment,
+                              displayCurrencyUnit,
+                              roundingMode,
+                              false
+                            )}
+                            onBlur={(e) =>
+                              handleCellChange(e.target.value, (yen) =>
+                                onUpdateBSItem(
+                                  project.id,
+                                  p.key,
+                                  ['fixedAssets', 'tangibleFixedAssets', 'machineryAndEquipment'],
+                                  yen
+                                )
+                              )
+                            }
+                            className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="text-[11px] text-slate-600">
+                      <td className="py-1 px-5 pl-6">ソフトウェア（無形固定資産）</td>
+                      {visiblePeriods.map((p) => (
+                        <td key={p.key} className="py-1 px-3 text-right font-mono">
+                          <input
+                            type="text"
+                            disabled={isLocked || !canEdit}
+                            defaultValue={formatMoney(
+                              fm.periods[p.key]?.bs.fixedAssets.intangibleFixedAssets.software,
+                              displayCurrencyUnit,
+                              roundingMode,
+                              false
+                            )}
+                            onBlur={(e) =>
+                              handleCellChange(e.target.value, (yen) =>
+                                onUpdateBSItem(
+                                  project.id,
+                                  p.key,
+                                  ['fixedAssets', 'intangibleFixedAssets', 'software'],
+                                  yen
+                                )
+                              )
+                            }
+                            className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  </>
+                )}
+
+                {/* 資産合計 */}
+                <tr className="bg-blue-50 font-bold text-blue-950 border-y-2 border-blue-300">
+                  <td className="py-2.5 px-3">★ 資産合計</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-2.5 px-3 text-right font-mono text-sm">
+                      {formatMoney(fm.periods[p.key]?.bs.totalAssets, displayCurrencyUnit, roundingMode, false)}
+                    </td>
+                  ))}
+                </tr>
+
+                {/* 負債合計 */}
+                <tr className="bg-slate-100 font-bold text-slate-900">
+                  <td className="py-2 px-3">【負債合計】</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-2 px-3 text-right font-mono">
+                      {formatMoney(fm.periods[p.key]?.bs.totalLiabilities, displayCurrencyUnit, roundingMode, false)}
+                    </td>
+                  ))}
+                </tr>
+
+                {/* 純資産合計 */}
+                <tr className="bg-slate-100 font-bold text-slate-900">
+                  <td className="py-2 px-3">【純資産合計】</td>
+                  {visiblePeriods.map((p) => (
+                    <td key={p.key} className="py-2 px-3 text-right font-mono">
+                      {formatMoney(fm.periods[p.key]?.bs.totalNetAssets, displayCurrencyUnit, roundingMode, false)}
+                    </td>
+                  ))}
+                </tr>
+
+                {/* 負債・純資産合計 */}
+                <tr className="bg-blue-50 font-bold text-blue-950 border-y-2 border-blue-300">
+                  <td className="py-2.5 px-3">★ 負債・純資産合計</td>
+                  {visiblePeriods.map((p) => {
+                    const bs = fm.periods[p.key]?.bs;
+                    const isBalanced = bs && bs.totalAssets === bs.totalLiabilitiesAndNetAssets;
+                    return (
+                      <td key={p.key} className="py-2.5 px-3 text-right font-mono text-sm">
+                        {formatMoney(bs?.totalLiabilitiesAndNetAssets, displayCurrencyUnit, roundingMode, false)}
+                        {!isBalanced && (
+                          <div className="text-[10px] text-rose-600 font-bold">貸借不一致</div>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-      </section>
+      )}
+
+      {/* TAB 4: 設備投資計画 */}
+      {activeTab === 'investment' && (
+        <div className="bg-white border border-slate-200 p-5 space-y-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-slate-900">
+              設備投資計画・資金調達内訳（円単位保持）
+            </h3>
+            <span className="text-xs text-slate-500">
+              表示単位: <strong className="text-slate-800">{getUnitLabel(displayCurrencyUnit)}</strong>
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* 投資内訳 */}
+            <div className="border border-slate-200 p-4 space-y-3">
+              <h4 className="text-xs font-bold text-slate-800 border-b border-slate-200 pb-2">
+                1. 投資経費内訳
+              </h4>
+              <div className="space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="machinery-inv" className="font-medium text-slate-700">新規設備投資（機械装置等）:</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      id="machinery-inv"
+                      type="text"
+                      disabled={isLocked || !canEdit}
+                      defaultValue={formatMoney(
+                        fm.investment.newMachineryInvestment,
+                        displayCurrencyUnit,
+                        roundingMode,
+                        false
+                      )}
+                      onBlur={(e) =>
+                        handleCellChange(e.target.value, (yen) =>
+                          onUpdateInvestment(project.id, { newMachineryInvestment: yen })
+                        )
+                      }
+                      className="w-32 text-right bg-white border border-slate-300 px-2 py-1 font-mono"
+                    />
+                    <span className="text-slate-500">{getUnitLabel(displayCurrencyUnit)}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <label htmlFor="intangible-inv" className="font-medium text-slate-700">無形資産投資（ソフトウェア・システム等）:</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      id="intangible-inv"
+                      type="text"
+                      disabled={isLocked || !canEdit}
+                      defaultValue={formatMoney(
+                        fm.investment.intangibleAssetInvestment,
+                        displayCurrencyUnit,
+                        roundingMode,
+                        false
+                      )}
+                      onBlur={(e) =>
+                        handleCellChange(e.target.value, (yen) =>
+                          onUpdateInvestment(project.id, { intangibleAssetInvestment: yen })
+                        )
+                      }
+                      className="w-32 text-right bg-white border border-slate-300 px-2 py-1 font-mono"
+                    />
+                    <span className="text-slate-500">{getUnitLabel(displayCurrencyUnit)}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <label htmlFor="rd-cost" className="font-medium text-slate-700">研究開発費（読み取れず0・要確認）:</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      id="rd-cost"
+                      type="text"
+                      disabled={isLocked || !canEdit}
+                      defaultValue={formatMoney(fm.investment.rdCost, displayCurrencyUnit, roundingMode, false)}
+                      onBlur={(e) =>
+                        handleCellChange(e.target.value, (yen) =>
+                          onUpdateInvestment(project.id, { rdCost: yen })
+                        )
+                      }
+                      className="w-32 text-right bg-white border border-slate-300 px-2 py-1 font-mono"
+                    />
+                    <span className="text-[10px] px-1 bg-amber-100 text-amber-800 border border-amber-300 font-bold">
+                      要確認
+                    </span>
+                    <span className="text-slate-500">{getUnitLabel(displayCurrencyUnit)}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <label htmlFor="hr-dev-cost" className="font-medium text-slate-700">能力開発費（読み取れず0・要確認）:</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      id="hr-dev-cost"
+                      type="text"
+                      disabled={isLocked || !canEdit}
+                      defaultValue={formatMoney(
+                        fm.investment.humanResourceDevelopmentCost,
+                        displayCurrencyUnit,
+                        roundingMode,
+                        false
+                      )}
+                      onBlur={(e) =>
+                        handleCellChange(e.target.value, (yen) =>
+                          onUpdateInvestment(project.id, { humanResourceDevelopmentCost: yen })
+                        )
+                      }
+                      className="w-32 text-right bg-white border border-slate-300 px-2 py-1 font-mono"
+                    />
+                    <span className="text-[10px] px-1 bg-amber-100 text-amber-800 border border-amber-300 font-bold">
+                      要確認
+                    </span>
+                    <span className="text-slate-500">{getUnitLabel(displayCurrencyUnit)}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between border-t border-slate-200 pt-2 font-bold text-slate-900">
+                  <span>総投資額合計:</span>
+                  <span className="font-mono text-sm text-blue-900">
+                    {formatMoney(fm.investment.totalInvestmentYen, displayCurrencyUnit, roundingMode)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* 資金調達内訳 */}
+            <div className="border border-slate-200 p-4 space-y-3">
+              <h4 className="text-xs font-bold text-slate-800 border-b border-slate-200 pb-2">
+                2. 資金調達内訳
+              </h4>
+              <div className="space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="subsidy-requested" className="font-medium text-slate-700">補助金交付申請額:</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      id="subsidy-requested"
+                      type="text"
+                      disabled={isLocked || !canEdit}
+                      defaultValue={formatMoney(
+                        fm.investment.subsidyRequestedYen,
+                        displayCurrencyUnit,
+                        roundingMode,
+                        false
+                      )}
+                      onBlur={(e) =>
+                        handleCellChange(e.target.value, (yen) =>
+                          onUpdateInvestment(project.id, { subsidyRequestedYen: yen })
+                        )
+                      }
+                      className="w-32 text-right bg-white border border-slate-300 px-2 py-1 font-mono font-bold text-blue-800"
+                    />
+                    <span className="text-slate-500">{getUnitLabel(displayCurrencyUnit)}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <label htmlFor="own-funds" className="font-medium text-slate-700">自己資金:</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      id="own-funds"
+                      type="text"
+                      disabled={isLocked || !canEdit}
+                      defaultValue={formatMoney(fm.investment.ownFundsYen, displayCurrencyUnit, roundingMode, false)}
+                      onBlur={(e) =>
+                        handleCellChange(e.target.value, (yen) =>
+                          onUpdateInvestment(project.id, { ownFundsYen: yen })
+                        )
+                      }
+                      className="w-32 text-right bg-white border border-slate-300 px-2 py-1 font-mono"
+                    />
+                    <span className="text-slate-500">{getUnitLabel(displayCurrencyUnit)}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <label htmlFor="bank-loans" className="font-medium text-slate-700">金融機関借入金:</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      id="bank-loans"
+                      type="text"
+                      disabled={isLocked || !canEdit}
+                      defaultValue={formatMoney(fm.investment.bankLoansYen, displayCurrencyUnit, roundingMode, false)}
+                      onBlur={(e) =>
+                        handleCellChange(e.target.value, (yen) =>
+                          onUpdateInvestment(project.id, { bankLoansYen: yen })
+                        )
+                      }
+                      className="w-32 text-right bg-white border border-slate-300 px-2 py-1 font-mono"
+                    />
+                    <span className="text-slate-500">{getUnitLabel(displayCurrencyUnit)}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between border-t border-slate-200 pt-2 font-bold text-slate-900">
+                  <span>調達合計:</span>
+                  <span className="font-mono text-sm text-slate-900">
+                    {formatMoney(
+                      fm.investment.subsidyRequestedYen +
+                        fm.investment.ownFundsYen +
+                        fm.investment.bankLoansYen,
+                      displayCurrencyUnit,
+                      roundingMode
+                    )}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 手動上書きモーダル */}
+      {showOverrideModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md bg-white border border-slate-300 p-6 shadow-xl space-y-4">
+            <h3 className="text-sm font-bold text-slate-900">
+              基準年度・申請時事業年度の手動上書き
+            </h3>
+            <p className="text-xs text-amber-700 bg-amber-50 p-2.5 border border-amber-200">
+              ※通常は申請締切日・実施期間・決算月から自動算出されます。手動上書きを行うと画面に警告バッジが表示されます。
+            </p>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="font-semibold text-slate-700 block mb-1">
+                  申請時事業年度（西暦年・○月期）:
+                </label>
+                <input
+                  type="number"
+                  value={tempCurrentFY}
+                  onChange={(e) => setTempCurrentFY(Number(e.target.value))}
+                  className="w-full bg-slate-50 border border-slate-300 px-2 py-1"
+                />
+              </div>
+
+              <div>
+                <label className="font-semibold text-slate-700 block mb-1">
+                  基準年度（補助事業完了予定年度・西暦年）:
+                </label>
+                <input
+                  type="number"
+                  value={tempBaseFY}
+                  onChange={(e) => setTempBaseFY(Number(e.target.value))}
+                  className="w-full bg-slate-50 border border-slate-300 px-2 py-1"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowOverrideModal(false)}
+                className="px-3 py-1.5 text-xs text-slate-700 bg-white border border-slate-300"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onOverrideFiscalYears(project.id, tempCurrentFY, tempBaseFY);
+                  setShowOverrideModal(false);
+                  onNotify('基準年度の手動上書き設定を保存しました。');
+                }}
+                className="px-3 py-1.5 text-xs text-white bg-blue-700 font-semibold"
+              >
+                上書き保存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

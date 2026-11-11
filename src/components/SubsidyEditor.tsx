@@ -76,6 +76,11 @@ const SUBSIDY_META: Record<
   SubsidyType,
   { subtitle: string; guideline: string }
 > = {
+  '新事業進出・ものづくり商業サービス補助金': {
+    subtitle: '革新的新製品・サービス枠／新事業進出枠／グローバル枠',
+    guideline:
+      '推奨文字数: 各項目 500字以上（事業実施体制・革新性・市場ニーズ・数値計画を明確に記述）',
+  },
   新事業進出補助金: {
     subtitle: '親データ・最大ボリューム（事業再構築・新分野展開向け詳細記述）',
     guideline:
@@ -588,7 +593,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
             activeCallRound.sectionCharLimits[section.id] ?? 400;
           const charEval = evaluateCharLimitStatus(
             section.currentText.length,
-            section.selectedLength,
+            section.selectedLength || '500',
             customCharLimit
           );
 

@@ -22,6 +22,29 @@ export const EXPENSE_CATEGORY_MAPPING: Record<
   SubsidyType,
   FormatExpenseMappingRule[]
 > = {
+  '新事業進出・ものづくり商業サービス補助金': [
+    {
+      id: 'mono-exp-1',
+      subsidyCategoryName: '機械装置・システム構築費',
+      sourceFields: ['machineryCost', 'systemCost'],
+      isEligible: true,
+      note: '製品・サービス開発に必要な専用機械装置・検査機器・システム構築費',
+    },
+    {
+      id: 'mono-exp-2',
+      subsidyCategoryName: '技術導入費・専門家経費・運搬費',
+      sourceFields: ['subcontractCost'],
+      isEligible: true,
+      note: '先端技術導入、学識経験者指導、大型機械搬入費用等',
+    },
+    {
+      id: 'mono-exp-3',
+      subsidyCategoryName: '外注費・知的財産権等関連経費・クラウドサービス利用費',
+      sourceFields: ['otherCost'],
+      isEligible: true,
+      note: '試作品評価外注・特許出願調査費用・クラウド利用料等',
+    },
+  ],
   新事業進出補助金: [
     {
       id: 'shin-exp-1',

@@ -1,362 +1,130 @@
+/**
+ * 補助金ストアフック (useSubsidyStore)
+ * 【STEP1要件準拠】
+ * 1. 案件データ・設定は localStorage に保存、ファイルは storageService (IndexedDB) と連携。
+ * 2. 金額表示単位（円/千円/万円）と端数処理（切り捨て/四捨五入）のグローバル状態管理。
+ * 3. 公募回設定の「版」管理（複製、版ごとの数値固定、各案件の appliedVersionId 連動）。
+ * 4. 「仮」の値一覧の確認・編集対応。
+ * 5. 設定・案件データの JSON エクスポート / インポート。
+ */
+
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  buildMasterItemsFromTemplates,
-  createGenericFinancialMaster,
-  createGenericHearingVariables,
+  createDemoCompanyFinancialMaster,
+  createEmptyBS,
+  createEmptyPL,
   createInitialAppState,
-  createStandardGates,
-  createStandardScheduleTasks,
-  createTechPrecisionSubsidies,
-  getSampleHearingVariablesForProject,
-  SUBSIDY_TYPES,
-  TECH_PRECISION_MASTER_IMPROVED_4,
-  TECH_PRECISION_MASTER_PRESET,
+  DEMO_PROJECT_MARUMARU,
+  INITIAL_CALL_ROUNDS,
+  INITIAL_TRACKS,
 } from '../data/initialData';
 import {
-  AICrossCheckIssue,
-  AICrossCheckResult,
-  CallRound,
-  DiffLog,
-  DocumentStatus,
-  EffectEstimateItem,
-  FinancialPeriodKey,
-  FinancialYearData,
+  AnnualSalesEstimateMethod,
+  DisplayCurrencyUnit,
+  EmployeeCountMethod,
   GanttTask,
-  HearingMasterItem,
-  HearingVariables,
-  InvestmentPlan,
+  InitialProjectDefaults,
+  InvestmentPlanYen,
+  PeriodKey,
+  PhaseGate,
+  PlanningYearsOption,
   Project,
+  ProjectFinancialMaster,
   ProjectStatus,
-  ReviewCriterion,
   Role,
+  RoundingMode,
   ScreenId,
   SubsidyAppState,
-  SubsidyDocument,
-  SubsidyRequirementThresholds,
-  SubsidySpecialFlags,
-  SubsidyType,
-  TextModule,
+  SubsidyRequirements,
+  SubsidyTrack,
+  SubsidyTrackId,
+  SubsidyVersionRound,
+  TentativeItem,
   WorkspaceTabId,
 } from '../types';
 import {
-  buildConsistencyCheckItems,
-  calculateDriverEstimates,
-  calculateNewDepreciationSchedule,
-  evaluateSubsidyRequirements,
-  interpolateTags,
-  recalculateInvestmentTotal,
-  recalculateYearData,
+  calculateAnnualSalesEstimate,
+  calculateFiscalYears,
+  recalculateBS,
+  recalculatePL,
 } from '../utils/financialCalculations';
+import {
+  exportDataAsJsonFile,
+  loadFromLocalStorage,
+  saveToLocalStorage,
+} from '../utils/storageService';
 
-export const STORAGE_KEY = 'subsidy_standardization_mock_v3';
-const LEGACY_STORAGE_KEY_V2 = 'subsidy_standardization_mock_v2';
-export const TOUR_SNAPSHOT_SESSION_KEY = 'subsidy_mock_tour_snapshot_v3';
+export const APP_STORAGE_KEY = 'subsidy_standardization_mock_v4';
+export const TOUR_SNAPSHOT_SESSION_KEY = 'subsidy_mock_tour_snapshot_v4';
 
-function isValidAppState(candidate: unknown): candidate is SubsidyAppState {
-  if (!candidate || typeof candidate !== 'object') return false;
-  const s = candidate as Partial<SubsidyAppState>;
-  return Boolean(
-    Array.isArray(s.projects) &&
-      s.projects.length > 0 &&
-      s.projects[0].financialMaster &&
-      s.projects[0].financialMaster.specialFlags &&
-      s.projects[0].hearingVariables &&
-      typeof s.projects[0].applicationDeadline === 'string' &&
-      Array.isArray(s.textModules) &&
-      Array.isArray(s.callRounds) &&
-      s.callRounds.length > 0 &&
-      typeof s.activeCallRoundId === 'string' &&
-      Array.isArray(s.effectEstimates) &&
-      s.thresholds &&
-      Array.isArray(s.thresholds.shinJigyo?.capTiers)
-  );
-}
-
-function formatNowTimestamp(): string {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, '0');
-  const dd = String(now.getDate()).padStart(2, '0');
-  const hh = String(now.getHours()).padStart(2, '0');
-  const min = String(now.getMinutes()).padStart(2, '0');
+function formatNow(): string {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
 }
 
-function parseManYen(amountStr: string): number {
-  const normalized = amountStr.replace(/,/g, '').trim();
-  const okuMatch = normalized.match(/(\d+(?:\.\d+)?)\s*億/);
-  const manMatch = normalized.match(/(\d+(?:\.\d+)?)\s*万/);
-  if (okuMatch || manMatch) {
-    const oku = okuMatch ? parseFloat(okuMatch[1]) * 10000 : 0;
-    const man = manMatch ? parseFloat(manMatch[1]) : 0;
-    return Math.round(oku + man);
-  }
-  const numericOnly = parseFloat(normalized.replace(/[^\d.]/g, ''));
-  return Number.isFinite(numericOnly) ? Math.round(numericOnly) : 0;
-}
-
-function buildDynamicSubsidiesFromMaster(
-  companyName: string,
-  industry: string,
-  masterItems: HearingMasterItem[],
-  promptSuggestionApplied: boolean
-): Record<SubsidyType, SubsidyDocument> {
-  const m1 =
-    masterItems[0]?.content ||
-    `${companyName}（${industry}）は専門技術と地域顧客基盤を有する中堅・中小事業者である。`;
-  const m2 =
-    masterItems[1]?.content ||
-    '既存市場の構造変化と既存設備の老朽化・外注依存により、高付加価値分野への事業転換が急務となっている。';
-  const m3 =
-    masterItems[2]?.content ||
-    '最新鋭の生産・デジタル管理設備を導入し、ボトルネック工程の内製化と一貫供給体制を構築する。';
-  const m4 =
-    masterItems[3]?.content ||
-    'リードタイム短縮と外注費削減を実現し、3年後に売上拡大と営業利益率の大幅改善を見込む。';
-  const extraMasterNote =
-    masterItems.length > 4
-      ? masterItems
-          .slice(4)
-          .map((item) => item.content)
-          .filter(Boolean)
-          .join(' ')
-      : '';
-
-  const roiAppendix = promptSuggestionApplied
-    ? ' なお設備投資総額に対する投資回収期間は約3.2年（製品群別の売上内訳・年間キャッシュフロー試算に基づく）と算定しており、投資採算性は十分に確保されている。'
-    : '';
-
-  const shin500_1 = `${m1} 一方で、${m2} こうした事業環境の変化に対応するため、自社のコア技術を展開できる成長市場への新事業進出を決断した。${extraMasterNote ? ` ${extraMasterNote}` : ''}`;
-  const shin200_1 = `${m1.slice(0, 95)} ${m2.slice(0, 95)}`;
-
-  const shin500_2 = `${m3} 従来工程では複数回の段取り作業や外部委託が発生していたが、本設備の導入により社内一貫体制へと抜本的に刷新される。これにより品質安定性の向上と納期遵守率100%を達成し、新規取引先が求める厳格な要求仕様に応える量産体制を確立する。`;
-  const shin200_2 = `${m3}`;
-
-  const shin500_3 = `${m4} 本投資によるコスト構造改善と新規受注の積み上げにより、既存事業への依存から脱却した高収益体質へと転換を図るとともに、専門人材の雇用・賃上げを推進する。${roiAppendix}`;
-  const shin200_3 = `${m4}`;
-
-  return {
-    新事業進出補助金: {
-      subsidyType: '新事業進出補助金',
-      status: '下書き',
-      lastSavedAt: formatNowTimestamp(),
-      sections: [
-        {
-          id: 'shin-1',
-          title: '1. 企業概要・経営環境',
-          sourceMasterIds: ['master-1', 'master-2'],
-          sourceMasterLabel: 'マスター① 企業概要・強み ＋ マスター② 現状の経営課題・背景',
-          text200: shin200_1,
-          text500: shin500_1,
-          customText: shin500_1,
-          selectedLength: '500',
-          currentText: shin500_1,
-          aiBaselineText: shin500_1,
-          isModified: false,
-        },
-        {
-          id: 'shin-2',
-          title: '2. 事業化に向けた詳細',
-          sourceMasterIds: ['master-3'],
-          sourceMasterLabel: 'マスター③ 導入設備/システムの詳細と具体的な取り組み',
-          text200: shin200_2,
-          text500: shin500_2,
-          customText: shin500_2,
-          selectedLength: '500',
-          currentText: shin500_2,
-          aiBaselineText: shin500_2,
-          isModified: false,
-        },
-        {
-          id: 'shin-3',
-          title: '3. 将来の数値目標・収益計画',
-          sourceMasterIds: ['master-4'],
-          sourceMasterLabel: 'マスター④ 期待される定性・定量効果（数値計画）',
-          text200: shin200_3,
-          text500: shin500_3,
-          customText: shin500_3,
-          selectedLength: '500',
-          currentText: shin500_3,
-          aiBaselineText: shin500_3,
-          isModified: false,
-        },
-      ],
-    },
-    小規模事業者持続化補助金: {
-      subsidyType: '小規模事業者持続化補助金',
-      status: '下書き',
-      lastSavedAt: formatNowTimestamp(),
-      sections: [
-        {
-          id: 'jizo-1',
-          title: '1. 企業概要・自社の強み',
-          sourceMasterIds: ['master-1'],
-          sourceMasterLabel: 'マスター① 企業概要・強み・競合優位性（要約抽出）',
-          text200: m1,
-          text500: shin500_1,
-          customText: m1,
-          selectedLength: '200',
-          currentText: m1,
-          aiBaselineText: m1,
-          isModified: false,
-        },
-        {
-          id: 'jizo-2',
-          title: '2. 今回の取り組み内容',
-          sourceMasterIds: ['master-2', 'master-3'],
-          sourceMasterLabel: 'マスター② 課題背景 ＋ マスター③ 導入設備と販路開拓展開',
-          text200: `${m3} あわせて技術サンプル製作と専門展示会・Web広報を展開し新規顧客の販路を開拓する。`,
-          text500: `${shin500_2} さらに導入設備を活用した高付加価値サンプルの製作・展示会出展を通じ、新規取引先の開拓を強力に推進する。`,
-          customText: `${m3} あわせて技術サンプル製作と専門展示会・Web広報を展開し新規顧客の販路を開拓する。`,
-          selectedLength: '200',
-          currentText: `${m3} あわせて技術サンプル製作と専門展示会・Web広報を展開し新規顧客の販路を開拓する。`,
-          aiBaselineText: `${m3} あわせて技術サンプル製作と専門展示会・Web広報を展開し新規顧客の販路を開拓する。`,
-          isModified: false,
-        },
-        {
-          id: 'jizo-3',
-          title: '3. 業務効率化・売上拡大効果',
-          sourceMasterIds: ['master-4'],
-          sourceMasterLabel: 'マスター④ 期待される定性・定量効果（即納・売上効果）',
-          text200: m4,
-          text500: shin500_3,
-          customText: m4,
-          selectedLength: '200',
-          currentText: m4,
-          aiBaselineText: m4,
-          isModified: false,
-        },
-      ],
-    },
-    東京都経営強化基盤事業: {
-      subsidyType: '東京都経営強化基盤事業',
-      status: '下書き',
-      lastSavedAt: formatNowTimestamp(),
-      sections: [
-        {
-          id: 'tokyo-1',
-          title: '1. 事業の現状と課題',
-          sourceMasterIds: ['master-1', 'master-2'],
-          sourceMasterLabel: 'マスター① 都内基盤強み ＋ マスター② 課題と背景',
-          text200: shin200_1,
-          text500: shin500_1,
-          customText: `${m1} しかし現在、${m2}`,
-          selectedLength: 'custom',
-          currentText: `${m1} しかし現在、${m2}`,
-          aiBaselineText: `${m1} しかし現在、${m2}`,
-          isModified: false,
-        },
-        {
-          id: 'tokyo-2',
-          title: '2. 設備導入計画',
-          sourceMasterIds: ['master-3'],
-          sourceMasterLabel: 'マスター③ 導入設備仕様・設置妥当性・見積根拠',
-          text200: shin200_2,
-          text500: shin500_2,
-          customText: `${m3} 都内工場への設置スペース・電源環境および複数社相見積による価格妥当性を事前検証済みであり、速やかな稼働開始が可能である。`,
-          selectedLength: 'custom',
-          currentText: `${m3} 都内工場への設置スペース・電源環境および複数社相見積による価格妥当性を事前検証済みであり、速やかな稼働開始が可能である。`,
-          aiBaselineText: `${m3} 都内工場への設置スペース・電源環境および複数社相見積による価格妥当性を事前検証済みであり、速やかな稼働開始が可能である。`,
-          isModified: false,
-        },
-        {
-          id: 'tokyo-3',
-          title: '3. 経営基盤強化の成果目標',
-          sourceMasterIds: ['master-4'],
-          sourceMasterLabel: 'マスター④ 都内サプライチェーン貢献・削減目標',
-          text200: shin200_3,
-          text500: shin500_3,
-          customText: `${m4} 都内サプライチェーンの高度化・周辺協力企業への波及と高付加価値な内製基盤強化に寄与する。${roiAppendix}`,
-          selectedLength: 'custom',
-          currentText: `${m4} 都内サプライチェーンの高度化・周辺協力企業への波及と高付加価値な内製基盤強化に寄与する。${roiAppendix}`,
-          aiBaselineText: `${m4} 都内サプライチェーンの高度化・周辺協力企業への波及と高付加価値な内製基盤強化に寄与する。${roiAppendix}`,
-          isModified: false,
-        },
-      ],
-    },
-  };
-}
-
-export interface NewProjectInput {
-  companyName: string;
-  industry: string;
-  salesRep: string;
-  writerName: string;
-  deadline: string;
-  targetAmount: string;
-}
-
 export function useSubsidyStore() {
-  const [restoredFromTourReload, setRestoredFromTourReload] = useState(false);
-
   const [state, setState] = useState<SubsidyAppState>(() => {
-    try {
-      // 旧v2キーを削除（§5: 旧キーのデータは移行せず初期データで起動）
-      window.localStorage.removeItem(LEGACY_STORAGE_KEY_V2);
-
-      // 4-B: ツアー中にリロードされた場合、sessionStorageのスナップショットを優先復元して削除
-      const tourSnapshotRaw = window.sessionStorage.getItem(
-        TOUR_SNAPSHOT_SESSION_KEY
-      );
-      if (tourSnapshotRaw) {
-        window.sessionStorage.removeItem(TOUR_SNAPSHOT_SESSION_KEY);
-        const parsedTour = JSON.parse(tourSnapshotRaw);
-        if (isValidAppState(parsedTour)) {
-          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(parsedTour));
-          setTimeout(() => setRestoredFromTourReload(true), 0);
-          return parsedTour;
-        }
-      }
-
-      const saved = window.localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (isValidAppState(parsed)) {
-          return parsed;
-        }
-      }
-    } catch {
-      // Fallback to initial state if storage unavailable or malformed
+    const loaded = loadFromLocalStorage<SubsidyAppState | null>(APP_STORAGE_KEY, null);
+    if (
+      loaded &&
+      Array.isArray(loaded.projects) &&
+      loaded.projects.length > 0 &&
+      Array.isArray(loaded.callRounds) &&
+      loaded.callRounds.length > 0 &&
+      loaded.initialDefaults
+    ) {
+      return loaded;
     }
     return createInitialAppState();
   });
 
+  // State自動保存
   useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {
-      // Ignore storage quota errors
-    }
+    saveToLocalStorage(APP_STORAGE_KEY, state);
   }, [state]);
 
+  // 選択中案件の取得
   const selectedProject = useMemo(() => {
     return (
       state.projects.find((p) => p.id === state.selectedProjectId) ??
-      state.projects[0]
+      state.projects[0] ??
+      DEMO_PROJECT_MARUMARU
     );
   }, [state.projects, state.selectedProjectId]);
 
+  // 選択中公募回の取得
   const activeCallRound = useMemo(() => {
     return (
-      state.callRounds.find((r) => r.id === state.activeCallRoundId) ??
-      state.callRounds[0]
+      state.callRounds.find((r) => r.id === state.activeVersionId) ??
+      state.callRounds[0] ??
+      INITIAL_CALL_ROUNDS[0]
     );
-  }, [state.callRounds, state.activeCallRoundId]);
+  }, [state.callRounds, state.activeVersionId]);
 
-  // 4-B: デモツアー終了時の完全復元用
-  const replaceState = useCallback((nextState: SubsidyAppState) => {
-    const cloned = JSON.parse(JSON.stringify(nextState)) as SubsidyAppState;
-    setState(cloned);
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(cloned));
-    } catch {
-      // Ignore
-    }
-  }, []);
+  // 案件が適用している公募回の取得
+  const projectAppliedRound = useMemo(() => {
+    return (
+      state.callRounds.find((r) => r.id === selectedProject.appliedVersionId) ??
+      activeCallRound
+    );
+  }, [state.callRounds, selectedProject.appliedVersionId, activeCallRound]);
 
-  const clearRestoredTourFlag = useCallback(() => {
-    setRestoredFromTourReload(false);
-  }, []);
+  // 案件が適用している枠の取得
+  const projectAppliedTrack = useMemo(() => {
+    const track = projectAppliedRound.tracks.find(
+      (t) => t.id === selectedProject.financialMaster.appliedTrackId
+    );
+    return track ?? projectAppliedRound.tracks[0] ?? INITIAL_TRACKS[0];
+  }, [projectAppliedRound, selectedProject.financialMaster.appliedTrackId]);
+
+  // ==========================================
+  // 基本ナビゲーション・表示設定
+  // ==========================================
 
   const setRole = useCallback((role: Role) => {
     setState((prev) => ({ ...prev, role }));
@@ -370,158 +138,248 @@ export function useSubsidyStore() {
     setState((prev) => ({ ...prev, workspaceTab }));
   }, []);
 
+  const setDisplayCurrencyUnit = useCallback((unit: DisplayCurrencyUnit) => {
+    setState((prev) => ({ ...prev, displayCurrencyUnit: unit }));
+  }, []);
+
+  const setRoundingMode = useCallback((mode: RoundingMode) => {
+    setState((prev) => ({ ...prev, roundingMode: mode }));
+  }, []);
+
   const selectProject = useCallback(
-    (
-      projectId: string,
-      navigateToScreen?: ScreenId,
-      navigateToTab?: WorkspaceTabId
-    ) => {
+    (projectId: string, screen?: ScreenId, tab?: WorkspaceTabId) => {
       setState((prev) => ({
         ...prev,
         selectedProjectId: projectId,
-        activeScreen: navigateToScreen ?? prev.activeScreen,
-        workspaceTab: navigateToTab ?? prev.workspaceTab,
+        activeScreen: screen ?? prev.activeScreen,
+        workspaceTab: tab ?? prev.workspaceTab,
       }));
     },
     []
   );
 
-  const addProject = useCallback((input: NewProjectInput) => {
-    const newId = `proj-${Date.now()}`;
-    const nextNum = 46 + Math.floor(Math.random() * 50);
-    const code = `AN-2026-0${nextNum}`;
-    const formattedAmount =
-      input.targetAmount.includes('万') || input.targetAmount.includes('億')
-        ? input.targetAmount.trim()
-        : `${Number(input.targetAmount.replace(/[^\d]/g, '') || 2000).toLocaleString()}万円`;
-    const targetManYen = parseManYen(formattedAmount) || 2000;
-    const deadlineDate = input.deadline || '2026-12-25';
+  // ==========================================
+  // 案件管理アクション
+  // ==========================================
 
-    setState((prev) => {
-      const masterItems = buildMasterItemsFromTemplates(prev.masterTemplates);
-      const emptySubsidies = buildDynamicSubsidiesFromMaster(
-        input.companyName,
-        input.industry,
-        masterItems.map((m) => ({ ...m, content: '' })),
-        prev.promptSuggestionApplied
-      );
-      SUBSIDY_TYPES.forEach((st) => {
-        emptySubsidies[st].status = '未作成';
-        emptySubsidies[st].sections.forEach((sec) => {
-          sec.currentText = '';
-          sec.aiBaselineText = '';
-          sec.customText = '';
-        });
-      });
+  const addProject = useCallback(
+    (input: {
+      companyName: string;
+      industry: string;
+      salesRep: string;
+      writerName: string;
+      deadline: string;
+      appliedTrackId?: SubsidyTrackId;
+    }) => {
+      const newId = `proj-${Date.now()}`;
+      const code = `AN-2026-${String(Math.floor(Math.random() * 900) + 100)}`;
+      const fm = createDemoCompanyFinancialMaster();
+      if (input.appliedTrackId) {
+        fm.appliedTrackId = input.appliedTrackId;
+      }
+      fm.planningYears = state.initialDefaults.planningYears;
+      fm.employeeCountMethod = state.initialDefaults.employeeCountMethod;
 
-      const estimatedMachinery = Math.round(targetManYen * 1.6);
-      const estimatedSystem = Math.round(targetManYen * 0.4);
-
-      const newProject: Project = {
+      const newProj: Project = {
         id: newId,
         code,
-        companyName: input.companyName.trim(),
-        industry: input.industry.trim(),
+        companyName: input.companyName.trim() || '新規申請事業者',
+        industry: input.industry.trim() || '製造業',
         salesRep: input.salesRep.trim() || '田中 健太',
         writerName: input.writerName.trim() || '佐藤 美咲',
-        deadline: deadlineDate,
-        applicationDeadline: deadlineDate,
-        targetAmount: formattedAmount,
-        targetAmountManYen: targetManYen,
+        deadline: input.deadline || '2026-12-25',
         status: '未着手',
+        appliedVersionId: state.activeVersionId,
+        appliedTrackId: input.appliedTrackId || 'shinjigyo',
+        financialMaster: fm,
+        hearingMasterItems: [
+          {
+            id: 'h-1',
+            title: '1. 企業概要・強み・競合優位性',
+            content: `${input.companyName}の主力技術・取引基盤についてのメモ。`,
+            prompt: '強みと優位性の抽出',
+          },
+          {
+            id: 'h-2',
+            title: '2. 現状課題・事業進出背景',
+            content: '市場構造変化と新分野への進出理由。',
+            prompt: '課題と新展開理由',
+          },
+          {
+            id: 'h-3',
+            title: '3. 導入設備仕様',
+            content: '導入予定の機械・システム概要。',
+            prompt: '設備仕様と工程集約',
+          },
+          {
+            id: 'h-4',
+            title: '4. 数値目標・投資効果',
+            content: '売上増加・付加価値額向上・賃上げ計画。',
+            prompt: '定性・定量効果',
+          },
+        ],
         rawHearingText: '',
-        hearingSourceNote: '新規登録案件（議事録未取込）',
-        masterItems,
-        hearingVariables: createGenericHearingVariables({
-          existingUnitPrice: 200000,
-          newUnitPrice: 300000,
-          countY1: 70,
-          countY2: 140,
-          countY3: 200, // 30万 × 200件 = 6,000万円
-          repeatRate: 80,
-          reducedHours: 800,
-          hourlyWage: 3200,
-          subcontractRed: 500,
-          defectCurr: 3.5,
-          defectTarget: 0.5,
-          ltCurr: 12,
-          ltTarget: 4,
-          capCurr: 250,
-          capTarget: 600,
-          hiresY1: 1,
-          hiresY2: 0,
-          hiresY3: 1,
-          wageGrowth: 3.8,
-          memoPrefix: '新規登録初期値',
-        }),
-        subsidies: emptySubsidies,
-        financialMaster: createGenericFinancialMaster({
-          baseSales: 25000,
-          y3SalesIncrease: 6000,
-          machineryCost: estimatedMachinery,
-          systemCost: estimatedSystem,
-          subsidyRequested: targetManYen,
-          employees: 15,
-          locked: false,
-        }),
-        gates: createStandardGates([]),
-        scheduleTasks: createStandardScheduleTasks('unstarted'),
+        sections: [
+          {
+            id: 'sec-1',
+            title: '1. 企業概要・経営環境',
+            sourceMasterIds: ['h-1', 'h-2'],
+            sourceMasterLabel: 'マスター① 企業概要 ＋ マスター② 現状課題',
+            currentText: '',
+            aiBaselineText: '',
+            charLimit: 500,
+            isModified: false,
+          },
+          {
+            id: 'sec-2',
+            title: '2. 具体的な取り組み（設備導入）',
+            sourceMasterIds: ['h-3'],
+            sourceMasterLabel: 'マスター③ 導入設備仕様',
+            currentText: '',
+            aiBaselineText: '',
+            charLimit: 500,
+            isModified: false,
+          },
+          {
+            id: 'sec-3',
+            title: '3. 将来の数値目標・賃上げ',
+            sourceMasterIds: ['h-4'],
+            sourceMasterLabel: 'マスター④ 数値目標',
+            currentText: '',
+            aiBaselineText: '',
+            charLimit: 500,
+            isModified: false,
+          },
+        ],
+        gates: [
+          {
+            id: 'gate-1',
+            number: 1,
+            title: 'マスターヒアリング合意',
+            description: '議事録・骨子確定',
+            isPassed: false,
+          },
+          {
+            id: 'gate-2',
+            number: 2,
+            title: '収支計画確定・ロック',
+            description: 'BS/PL・要件確定',
+            isPassed: false,
+          },
+          {
+            id: 'gate-3',
+            number: 3,
+            title: '申請書ドラフト・整合性検証',
+            description: '申請書本文突合',
+            isPassed: false,
+          },
+          {
+            id: 'gate-4',
+            number: 4,
+            title: '顧客最終承認・電子申請',
+            description: '電子申請完了',
+            isPassed: false,
+          },
+        ],
+        scheduleTasks: [
+          {
+            id: 't-1',
+            title: 'ヒアリング整理',
+            category: 'support',
+            startWeek: 1,
+            endWeek: 2,
+            status: 'not_started',
+            gateId: 'gate-1',
+          },
+          {
+            id: 't-2',
+            title: '収支計画策定',
+            category: 'support',
+            startWeek: 3,
+            endWeek: 4,
+            status: 'not_started',
+            gateId: 'gate-2',
+          },
+        ],
         manualChecks: {},
-        updatedAt: formatNowTimestamp(),
+        masterItems: JSON.parse(JSON.stringify(DEMO_PROJECT_MARUMARU.masterItems)),
+        hearingVariables: JSON.parse(JSON.stringify(DEMO_PROJECT_MARUMARU.hearingVariables)),
+        subsidies: JSON.parse(JSON.stringify(DEMO_PROJECT_MARUMARU.subsidies)),
+        updatedAt: formatNow(),
       };
 
-      return {
+      setState((prev) => ({
         ...prev,
-        projects: [newProject, ...prev.projects],
+        projects: [newProj, ...prev.projects],
         selectedProjectId: newId,
-      };
-    });
-
-    return newId;
-  }, []);
+      }));
+      return newId;
+    },
+    [state.activeVersionId, state.initialDefaults]
+  );
 
   const updateProjectStatus = useCallback(
     (projectId: string, status: ProjectStatus) => {
       setState((prev) => ({
         ...prev,
         projects: prev.projects.map((p) =>
-          p.id === projectId
-            ? { ...p, status, updatedAt: formatNowTimestamp() }
-            : p
+          p.id === projectId ? { ...p, status, updatedAt: formatNow() } : p
         ),
       }));
     },
     []
   );
 
-  // ガントチャートタスクのステータス更新
-  const updateTaskStatus = useCallback(
-    (projectId: string, taskId: string, status: GanttTask['status']) => {
-      const now = formatNowTimestamp();
+  const updateProjectTrack = useCallback(
+    (projectId: string, trackId: SubsidyTrackId) => {
       setState((prev) => ({
         ...prev,
         projects: prev.projects.map((p) => {
           if (p.id !== projectId) return p;
-          const targetTask = p.scheduleTasks.find((t) => t.id === taskId);
-          const nextTasks = p.scheduleTasks.map((t) =>
-            t.id === taskId ? { ...t, status } : t
+          const track =
+            activeCallRound.tracks.find((t) => t.id === trackId) ?? INITIAL_TRACKS[0];
+          const autoCalc = calculateFiscalYears(
+            p.financialMaster.fiscalMonth,
+            track.applicationDeadline,
+            track.adoptionDate,
+            track.executionPeriodMonths,
+            p.financialMaster.autoFiscalCalc.overriddenCurrentFY,
+            p.financialMaster.autoFiscalCalc.overriddenBaseFY
           );
-
-          let nextGates = p.gates;
-          if (targetTask?.gateId && targetTask.gateId !== 'gate-2') {
-            const passed = status === 'completed';
-            nextGates = p.gates.map((g) =>
-              g.id === targetTask.gateId
-                ? { ...g, isPassed: passed, passedAt: passed ? now : undefined }
-                : g
-            );
-          }
-
           return {
             ...p,
-            scheduleTasks: nextTasks,
-            gates: nextGates,
-            updatedAt: now,
+            appliedTrackId: trackId,
+            financialMaster: {
+              ...p.financialMaster,
+              appliedTrackId: trackId,
+              autoFiscalCalc: autoCalc,
+            },
+            updatedAt: formatNow(),
+          };
+        }),
+      }));
+    },
+    [activeCallRound]
+  );
+
+  const updatePlanningYears = useCallback(
+    (projectId: string, years: PlanningYearsOption) => {
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) => {
+          if (p.id !== projectId) return p;
+          const nextFM: ProjectFinancialMaster = {
+            ...p.financialMaster,
+            planningYears: years,
+          };
+          nextFM.annualSalesEstimate = calculateAnnualSalesEstimate(
+            nextFM,
+            nextFM.annualSalesEstimate.method
+          );
+          return {
+            ...p,
+            financialMaster: nextFM,
+            updatedAt: formatNow(),
           };
         }),
       }));
@@ -529,14 +387,367 @@ export function useSubsidyStore() {
     []
   );
 
-  // Gate 1〜4 の通過更新
-  const setGatePassed = useCallback(
+  const updateEmployeeCountMethod = useCallback(
+    (projectId: string, method: EmployeeCountMethod) => {
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) =>
+          p.id === projectId
+            ? {
+                ...p,
+                financialMaster: {
+                  ...p.financialMaster,
+                  employeeCountMethod: method,
+                },
+                updatedAt: formatNow(),
+              }
+            : p
+        ),
+      }));
+    },
+    []
+  );
+
+  const updateAnnualSalesEstimateMethod = useCallback(
+    (projectId: string, method: AnnualSalesEstimateMethod) => {
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) => {
+          if (p.id !== projectId) return p;
+          const nextEstimate = calculateAnnualSalesEstimate(p.financialMaster, method);
+          return {
+            ...p,
+            financialMaster: {
+              ...p.financialMaster,
+              annualSalesEstimate: nextEstimate,
+            },
+            updatedAt: formatNow(),
+          };
+        }),
+      }));
+    },
+    []
+  );
+
+  const updateFiscalMonth = useCallback(
+    (projectId: string, month: number) => {
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) => {
+          if (p.id !== projectId) return p;
+          const track =
+            activeCallRound.tracks.find(
+              (t) => t.id === p.financialMaster.appliedTrackId
+            ) ?? INITIAL_TRACKS[0];
+          const autoCalc = calculateFiscalYears(
+            month,
+            track.applicationDeadline,
+            track.adoptionDate,
+            track.executionPeriodMonths,
+            p.financialMaster.autoFiscalCalc.overriddenCurrentFY,
+            p.financialMaster.autoFiscalCalc.overriddenBaseFY
+          );
+          return {
+            ...p,
+            financialMaster: {
+              ...p.financialMaster,
+              fiscalMonth: month,
+              autoFiscalCalc: autoCalc,
+            },
+            updatedAt: formatNow(),
+          };
+        }),
+      }));
+    },
+    [activeCallRound]
+  );
+
+  const overrideFiscalYears = useCallback(
+    (projectId: string, overriddenCurrentFY?: number, overriddenBaseFY?: number) => {
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) => {
+          if (p.id !== projectId) return p;
+          const track =
+            activeCallRound.tracks.find(
+              (t) => t.id === p.financialMaster.appliedTrackId
+            ) ?? INITIAL_TRACKS[0];
+          const autoCalc = calculateFiscalYears(
+            p.financialMaster.fiscalMonth,
+            track.applicationDeadline,
+            track.adoptionDate,
+            track.executionPeriodMonths,
+            overriddenCurrentFY,
+            overriddenBaseFY
+          );
+          return {
+            ...p,
+            financialMaster: {
+              ...p.financialMaster,
+              autoFiscalCalc: autoCalc,
+            },
+            updatedAt: formatNow(),
+          };
+        }),
+      }));
+    },
+    [activeCallRound]
+  );
+
+  const updatePeriodMonths = useCallback(
+    (projectId: string, periodKey: PeriodKey, months: number, note?: string) => {
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) => {
+          if (p.id !== projectId) return p;
+          const period = p.financialMaster.periods[periodKey];
+          if (!period) return p;
+          const updatedPL = {
+            ...period.pl,
+            periodMonths: months,
+            isIrregularPeriod: months !== 12,
+            periodNote: note,
+          };
+          const updatedFiscalInfo = {
+            ...period.fiscalInfo,
+            periodMonths: months,
+            isIrregular: months !== 12,
+          };
+          return {
+            ...p,
+            financialMaster: {
+              ...p.financialMaster,
+              periods: {
+                ...p.financialMaster.periods,
+                [periodKey]: {
+                  ...period,
+                  pl: updatedPL,
+                  fiscalInfo: updatedFiscalInfo,
+                },
+              },
+            },
+            updatedAt: formatNow(),
+          };
+        }),
+      }));
+    },
+    []
+  );
+
+  // BS項目の更新（ネストされたパス対応）
+  const updateBSItem = useCallback(
     (
       projectId: string,
-      gateId: 'gate-1' | 'gate-2' | 'gate-3' | 'gate-4',
-      isPassed: boolean
+      periodKey: PeriodKey,
+      path: (string | number)[],
+      value: number
     ) => {
-      const now = formatNowTimestamp();
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) => {
+          if (p.id !== projectId) return p;
+          const period = p.financialMaster.periods[periodKey];
+          if (!period) return p;
+          const bsCopy = JSON.parse(JSON.stringify(period.bs)) as any;
+          let target = bsCopy;
+          for (let i = 0; i < path.length - 1; i++) {
+            target = target[path[i]];
+          }
+          target[path[path.length - 1]] = value;
+          const calculatedBS = recalculateBS(bsCopy);
+
+          return {
+            ...p,
+            financialMaster: {
+              ...p.financialMaster,
+              periods: {
+                ...p.financialMaster.periods,
+                [periodKey]: {
+                  ...period,
+                  bs: calculatedBS,
+                },
+              },
+            },
+            updatedAt: formatNow(),
+          };
+        }),
+      }));
+    },
+    []
+  );
+
+  // PL項目の更新（既存事業 / 補助事業 / ルート項目）
+  const updatePLItem = useCallback(
+    (
+      projectId: string,
+      periodKey: PeriodKey,
+      segment: 'existingBusiness' | 'subsidyBusiness' | 'root',
+      field: string,
+      value: number
+    ) => {
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) => {
+          if (p.id !== projectId) return p;
+          const period = p.financialMaster.periods[periodKey];
+          if (!period) return p;
+          const plCopy = JSON.parse(JSON.stringify(period.pl)) as any;
+          if (segment === 'root') {
+            plCopy[field] = value;
+          } else {
+            plCopy[segment][field] = value;
+          }
+          const calculatedPL = recalculatePL(plCopy);
+
+          const nextPeriods = {
+            ...p.financialMaster.periods,
+            [periodKey]: {
+              ...period,
+              pl: calculatedPL,
+            },
+          };
+
+          const nextFM: ProjectFinancialMaster = {
+            ...p.financialMaster,
+            periods: nextPeriods,
+          };
+          nextFM.annualSalesEstimate = calculateAnnualSalesEstimate(
+            nextFM,
+            nextFM.annualSalesEstimate.method
+          );
+
+          return {
+            ...p,
+            financialMaster: nextFM,
+            updatedAt: formatNow(),
+          };
+        }),
+      }));
+    },
+    []
+  );
+
+  // 投資計画の更新
+  const updateInvestment = useCallback(
+    (projectId: string, updates: Partial<InvestmentPlanYen>) => {
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) => {
+          if (p.id !== projectId) return p;
+          const inv = {
+            ...p.financialMaster.investment,
+            ...updates,
+          };
+          inv.totalInvestmentYen =
+            (inv.newMachineryInvestment || 0) +
+            (inv.intangibleAssetInvestment || 0) +
+            (inv.rdCost || 0) +
+            (inv.humanResourceDevelopmentCost || 0);
+
+          return {
+            ...p,
+            financialMaster: {
+              ...p.financialMaster,
+              investment: inv,
+            },
+            updatedAt: formatNow(),
+          };
+        }),
+      }));
+    },
+    []
+  );
+
+  // 賃上げ特例フラグ切り替え
+  const toggleWageSpecial = useCallback((projectId: string, isApplied: boolean) => {
+    setState((prev) => ({
+      ...prev,
+      projects: prev.projects.map((p) =>
+        p.id === projectId
+          ? {
+              ...p,
+              financialMaster: {
+                ...p.financialMaster,
+                isWageSpecialApplied: isApplied,
+              },
+              updatedAt: formatNow(),
+            }
+            : p
+      ),
+    }));
+  }, []);
+
+  // 収支計画ロック・解除
+  const lockFinancialPlan = useCallback((projectId: string) => {
+    const now = formatNow();
+    setState((prev) => ({
+      ...prev,
+      projects: prev.projects.map((p) => {
+        if (p.id !== projectId) return p;
+        const nextGates = p.gates.map((g) =>
+          g.id === 'gate-2' ? { ...g, isPassed: true, passedAt: now } : g
+        );
+        return {
+          ...p,
+          status: p.status === '未着手' ? '申請書作成中' : p.status,
+          financialMaster: {
+            ...p.financialMaster,
+            status: 'locked',
+            lockedAt: now,
+          },
+          gates: nextGates,
+          updatedAt: now,
+        };
+      }),
+    }));
+  }, []);
+
+  const unlockFinancialPlan = useCallback((projectId: string) => {
+    setState((prev) => ({
+      ...prev,
+      projects: prev.projects.map((p) => {
+        if (p.id !== projectId) return p;
+        const nextGates = p.gates.map((g) =>
+          g.id === 'gate-2' ? { ...g, isPassed: false, passedAt: undefined } : g
+        );
+        return {
+          ...p,
+          financialMaster: {
+            ...p.financialMaster,
+            status: 'draft',
+            lockedAt: undefined,
+          },
+          gates: nextGates,
+          updatedAt: formatNow(),
+        };
+      }),
+    }));
+  }, []);
+
+  // ガント・ゲート管理
+  const updateTaskStatus = useCallback(
+    (projectId: string, taskId: string, status: GanttTask['status']) => {
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) => {
+          if (p.id !== projectId) return p;
+          const nextTasks = p.scheduleTasks.map((t) =>
+            t.id === taskId ? { ...t, status } : t
+          );
+          return {
+            ...p,
+            scheduleTasks: nextTasks,
+            updatedAt: formatNow(),
+          };
+        }),
+      }));
+    },
+    []
+  );
+
+  const setGatePassed = useCallback(
+    (projectId: string, gateId: PhaseGate['id'], isPassed: boolean) => {
+      const now = formatNow();
       setState((prev) => ({
         ...prev,
         projects: prev.projects.map((p) => {
@@ -546,30 +757,9 @@ export function useSubsidyStore() {
               ? { ...g, isPassed, passedAt: isPassed ? now : undefined }
               : g
           );
-          const nextTasks = p.scheduleTasks.map((t) =>
-            t.gateId === gateId
-              ? {
-                  ...t,
-                  status: isPassed
-                    ? ('completed' as const)
-                    : ('in_progress' as const),
-                }
-              : t
-          );
-          const nextFinancialMaster =
-            gateId === 'gate-2'
-              ? {
-                  ...p.financialMaster,
-                  status: isPassed ? ('locked' as const) : ('draft' as const),
-                  lockedAt: isPassed ? now : undefined,
-                }
-              : p.financialMaster;
-
           return {
             ...p,
             gates: nextGates,
-            scheduleTasks: nextTasks,
-            financialMaster: nextFinancialMaster,
             updatedAt: now,
           };
         }),
@@ -578,221 +768,22 @@ export function useSubsidyStore() {
     []
   );
 
-  const updateRawHearingText = useCallback(
-    (projectId: string, rawHearingText: string, hearingSourceNote?: string) => {
+  // 申請書セクションテキスト保存
+  const saveSectionText = useCallback(
+    (projectId: string, sectionId: string, text: string) => {
       setState((prev) => ({
         ...prev,
         projects: prev.projects.map((p) => {
           if (p.id !== projectId) return p;
-          const nextStatus: ProjectStatus =
-            p.status === '未着手' && rawHearingText.trim().length > 0
-              ? 'ヒアリング中'
-              : p.status;
-          return {
-            ...p,
-            rawHearingText,
-            hearingSourceNote: hearingSourceNote ?? p.hearingSourceNote,
-            status: nextStatus,
-            updatedAt: formatNowTimestamp(),
-          };
-        }),
-      }));
-    },
-    []
-  );
-
-  // M1: ヒアリング算定変数の更新
-  const updateHearingVariables = useCallback(
-    (projectId: string, nextVariables: HearingVariables) => {
-      const now = formatNowTimestamp();
-      setState((prev) => ({
-        ...prev,
-        projects: prev.projects.map((p) =>
-          p.id === projectId
-            ? { ...p, hearingVariables: nextVariables, updatedAt: now }
-            : p
-        ),
-      }));
-    },
-    []
-  );
-
-  // M1: ヒアリングシート（Excel）取込シミュレーション
-  const importSampleHearingSheetExcel = useCallback((projectId: string) => {
-    const now = formatNowTimestamp();
-    setState((prev) => ({
-      ...prev,
-      projects: prev.projects.map((p) => {
-        if (p.id !== projectId) return p;
-        const sampleVars = getSampleHearingVariablesForProject(projectId);
-        return {
-          ...p,
-          hearingVariables: sampleVars,
-          hearingSourceNote: `共通ヒアリングシート取込: マスターヒアリングシート_${p.companyName}.xlsx`,
-          status: p.status === '未着手' ? 'ヒアリング中' : p.status,
-          updatedAt: now,
-        };
-      }),
-    }));
-  }, []);
-
-  const generateMasterFromHearing = useCallback((projectId: string) => {
-    const now = formatNowTimestamp();
-    setState((prev) => {
-      const target = prev.projects.find((p) => p.id === projectId);
-      if (!target) return prev;
-
-      const isTechPrecision =
-        target.id === 'proj-tech-precision' ||
-        target.rawHearingText.includes('テックプレシジョン') ||
-        target.companyName.includes('テックプレシジョン');
-
-      const generatedMasterItems: HearingMasterItem[] = prev.masterTemplates.map(
-        (tpl, idx) => {
-          if (isTechPrecision) {
-            if (tpl.id === 'master-4' && prev.promptSuggestionApplied) {
-              return {
-                id: tpl.id,
-                title: tpl.title,
-                prompt: tpl.prompt,
-                content: TECH_PRECISION_MASTER_IMPROVED_4,
-              };
-            }
-            if (TECH_PRECISION_MASTER_PRESET[tpl.id]) {
-              return {
-                id: tpl.id,
-                title: tpl.title,
-                prompt: tpl.prompt,
-                content: TECH_PRECISION_MASTER_PRESET[tpl.id],
-              };
-            }
-            return {
-              id: tpl.id,
-              title: tpl.title,
-              prompt: tpl.prompt,
-              content:
-                '大田区の本社工場における推進体制として、代表取締役直轄の5軸量産移行プロジェクトチーム（製造責任者・CAD/CAM専任技術者計4名）を編成済。既存取引先からの試作評価を経て段階的に量産移行する実行計画を策定している。',
-            };
-          }
-
-          const rawSnippet = target.rawHearingText.trim();
-          const defaultExtracts = [
-            `${target.companyName}（${target.industry}、従業員${target.financialMaster.historical.yMinus1.employees}名）は専門性の高い現場技術と既存顧客からの厚い信頼を有し、短納期・高品質な対応体制を競合優位性としている。`,
-            '既存主力領域の需要構造変化と旧来設備の制約により利益率改善が課題となっており、成長分野への事業展開と工程内製化が急務である。',
-            `最新鋭の専用機械装置（${target.financialMaster.investment.machineryCost.toLocaleString()}万円）および管理システム（${target.financialMaster.investment.systemCost.toLocaleString()}万円）の総額${target.financialMaster.investment.totalInvestment.toLocaleString()}万円を導入し、ボトルネック工程の自動化・内製化を実現する。`,
-            prev.promptSuggestionApplied
-              ? `工程リードタイムを65%短縮し外注費を削減。3年後に売上高6,000万円増、営業利益率8.2%を達成し、投資回収期間は約3.4年を見込む。`
-              : `工程リードタイムを65%短縮し外注費を削減。新規受注獲得により導入3年後に売上高6,000万円増、営業利益率8.2%への改善を達成する。`,
-          ];
-
-          return {
-            id: tpl.id,
-            title: tpl.title,
-            prompt: tpl.prompt,
-            content:
-              defaultExtracts[idx] ??
-              (rawSnippet
-                ? `ヒアリング原稿に基づき「${tpl.title}」の要点を構造化抽出：社内専任体制のもと計画的に導入・運用を推進し、地域経済および取引先サプライチェーンへ貢献する。`
-                : `${target.companyName}における「${tpl.title}」の計画骨子を整備し、審査項目に合致する具体根拠を明示する。`),
-          };
-        }
-      );
-
-      let nextSubsidies: Record<SubsidyType, SubsidyDocument>;
-      if (isTechPrecision) {
-        nextSubsidies = createTechPrecisionSubsidies();
-        if (prev.promptSuggestionApplied) {
-          const roiSentence =
-            'なお総投資額4,200万円に対する投資回収期間は年間キャッシュフロー増加額（約1,310万円）ベースで約3.2年、3年後売上増8,000万円の内訳はEV冷却部品5,000万円・医療内視鏡部品3,000万円と具体試算している。';
-          nextSubsidies['新事業進出補助金'].sections[2].text500 += roiSentence;
-          nextSubsidies['新事業進出補助金'].sections[2].currentText =
-            nextSubsidies['新事業進出補助金'].sections[2].text500;
-          nextSubsidies['新事業進出補助金'].sections[2].aiBaselineText =
-            nextSubsidies['新事業進出補助金'].sections[2].text500;
-          nextSubsidies['東京都経営強化基盤事業'].sections[2].customText +=
-            roiSentence;
-          nextSubsidies['東京都経営強化基盤事業'].sections[2].currentText =
-            nextSubsidies['東京都経営強化基盤事業'].sections[2].customText;
-          nextSubsidies['東京都経営強化基盤事業'].sections[2].aiBaselineText =
-            nextSubsidies['東京都経営強化基盤事業'].sections[2].customText;
-        }
-        nextSubsidies['東京都経営強化基盤事業'].status = '下書き';
-      } else {
-        nextSubsidies = buildDynamicSubsidiesFromMaster(
-          target.companyName,
-          target.industry,
-          generatedMasterItems,
-          prev.promptSuggestionApplied
-        );
-      }
-
-      const advanceStatuses: ProjectStatus[] = ['未着手', 'ヒアリング中'];
-      const nextProjectStatus: ProjectStatus = advanceStatuses.includes(
-        target.status
-      )
-        ? 'マスター作成済'
-        : target.status;
-
-      const nextGates = target.gates.map((g) =>
-        g.id === 'gate-1'
-          ? { ...g, isPassed: true, passedAt: g.passedAt ?? now }
-          : g
-      );
-      const nextTasks = target.scheduleTasks.map((t) =>
-        t.id === 'task-2' || t.id === 'task-3'
-          ? { ...t, status: 'completed' as const }
-          : t
-      );
-
-      return {
-        ...prev,
-        projects: prev.projects.map((p) =>
-          p.id === projectId
-            ? {
-                ...p,
-                masterItems: generatedMasterItems,
-                subsidies: nextSubsidies,
-                status: nextProjectStatus,
-                gates: nextGates,
-                scheduleTasks: nextTasks,
-                updatedAt: now,
-              }
-            : p
-        ),
-      };
-    });
-  }, []);
-
-  const saveMasterItem = useCallback(
-    (projectId: string, itemId: string, content: string) => {
-      const now = formatNowTimestamp();
-      setState((prev) => ({
-        ...prev,
-        projects: prev.projects.map((p) => {
-          if (p.id !== projectId) return p;
-          const updatedMaster = p.masterItems.map((item) =>
-            item.id === itemId ? { ...item, content } : item
+          const nextSecs = p.sections.map((s) =>
+            s.id === sectionId
+              ? { ...s, currentText: text, isModified: text !== s.aiBaselineText }
+              : s
           );
-          const allFilled = updatedMaster.every(
-            (m) => m.content.trim().length > 0
-          );
-          const nextGates = allFilled
-            ? p.gates.map((g) =>
-                g.id === 'gate-1'
-                  ? { ...g, isPassed: true, passedAt: g.passedAt ?? now }
-                  : g
-              )
-            : p.gates;
-          const nextStatus: ProjectStatus =
-            p.status === '未着手' || p.status === 'ヒアリング中'
-              ? 'マスター作成済'
-              : p.status;
           return {
             ...p,
-            masterItems: updatedMaster,
-            gates: nextGates,
-            status: nextStatus,
-            updatedAt: now,
+            sections: nextSecs,
+            updatedAt: formatNow(),
           };
         }),
       }));
@@ -800,1163 +791,197 @@ export function useSubsidyStore() {
     []
   );
 
-  const syncMasterToSubsidies = useCallback((projectId: string) => {
-    const now = formatNowTimestamp();
-    setState((prev) => {
-      const target = prev.projects.find((p) => p.id === projectId);
-      if (!target) return prev;
+  // ==========================================
+  // 公募回（版）管理アクション
+  // ==========================================
 
-      const isTechPrecisionUnchanged =
-        target.id === 'proj-tech-precision' &&
-        target.masterItems.every(
-          (m) =>
-            !TECH_PRECISION_MASTER_PRESET[m.id] ||
-            m.content === TECH_PRECISION_MASTER_PRESET[m.id]
-        );
-
-      const nextSubsidies = isTechPrecisionUnchanged
-        ? createTechPrecisionSubsidies()
-        : buildDynamicSubsidiesFromMaster(
-            target.companyName,
-            target.industry,
-            target.masterItems,
-            prev.promptSuggestionApplied
-          );
-
-      const nextGates = target.gates.map((g) =>
-        g.id === 'gate-1'
-          ? { ...g, isPassed: true, passedAt: g.passedAt ?? now }
-          : g
-      );
-      const nextTasks = target.scheduleTasks.map((t) =>
-        t.id === 'task-3' ? { ...t, status: 'completed' as const } : t
-      );
-
-      return {
-        ...prev,
-        projects: prev.projects.map((p) =>
-          p.id === projectId
-            ? {
-                ...p,
-                subsidies: nextSubsidies,
-                gates: nextGates,
-                scheduleTasks: nextTasks,
-                status:
-                  p.status === '未着手' || p.status === 'ヒアリング中'
-                    ? '収支計画作成中'
-                    : p.status,
-                updatedAt: now,
-              }
-            : p
-        ),
-      };
-    });
-  }, []);
-
-  // M2: 算定結果（直前期売上＋新事業売上）を将来3ヶ年計画へ反映
-  const applyHearingDriversToForecast = useCallback((projectId: string) => {
-    const now = formatNowTimestamp();
-    setState((prev) => ({
-      ...prev,
-      projects: prev.projects.map((p) => {
-        if (p.id !== projectId) return p;
-        const fm = p.financialMaster;
-        if (fm.status === 'locked') return p;
-        const drivers = calculateDriverEstimates(
-          p.hearingVariables,
-          fm.historical.yMinus1.sales
-        );
-
-        const nextForecast = {
-          y1: recalculateYearData({
-            ...fm.forecast.y1,
-            sales: drivers.forecastSalesY1ManYen,
-          }),
-          y2: recalculateYearData({
-            ...fm.forecast.y2,
-            sales: drivers.forecastSalesY2ManYen,
-          }),
-          y3: recalculateYearData({
-            ...fm.forecast.y3,
-            sales: drivers.forecastSalesY3ManYen,
-          }),
-        };
-
-        return {
-          ...p,
-          financialMaster: {
-            ...fm,
-            forecast: nextForecast,
-          },
-          updatedAt: now,
-        };
-      }),
-    }));
-  }, []);
-
-  // M8: 案件ごとの特例フラグ更新
-  const updateSpecialFlags = useCallback(
-    (projectId: string, flagUpdates: Partial<SubsidySpecialFlags>) => {
-      const now = formatNowTimestamp();
-      setState((prev) => ({
-        ...prev,
-        projects: prev.projects.map((p) => {
-          if (p.id !== projectId) return p;
-          return {
-            ...p,
-            financialMaster: {
-              ...p.financialMaster,
-              specialFlags: {
-                ...p.financialMaster.specialFlags,
-                ...flagUpdates,
-              },
-            },
-            updatedAt: now,
-          };
-        }),
-      }));
-    },
-    []
-  );
-
-  // 財務マスターの各期フィールド更新
-  const updateFinancialField = useCallback(
-    (
-      projectId: string,
-      period: FinancialPeriodKey,
-      field: keyof FinancialYearData,
-      value: number
-    ) => {
-      const now = formatNowTimestamp();
-      setState((prev) => ({
-        ...prev,
-        projects: prev.projects.map((p) => {
-          if (p.id !== projectId) return p;
-          const fm = p.financialMaster;
-          const isHistorical =
-            period === 'yMinus3' || period === 'yMinus2' || period === 'yMinus1';
-
-          if (isHistorical) {
-            const currentYear = fm.historical[period];
-            const updatedYear = recalculateYearData({
-              ...currentYear,
-              [field]: value,
-            });
-            const nextHistorical = {
-              ...fm.historical,
-              [period]: updatedYear,
-            };
-
-            let nextForecast = fm.forecast;
-            if (period === 'yMinus1' && field === 'depreciation') {
-              const newDep = calculateNewDepreciationSchedule(
-                fm.investment.totalInvestment,
-                fm.investment.depreciationMethod,
-                fm.investment.usefulLifeYears
-              );
-              nextForecast = {
-                y1: recalculateYearData({
-                  ...fm.forecast.y1,
-                  depreciation: value + newDep.y1,
-                }),
-                y2: recalculateYearData({
-                  ...fm.forecast.y2,
-                  depreciation: value + newDep.y2,
-                }),
-                y3: recalculateYearData({
-                  ...fm.forecast.y3,
-                  depreciation: value + newDep.y3,
-                }),
-              };
-            }
-
-            return {
-              ...p,
-              financialMaster: {
-                ...fm,
-                historical: nextHistorical,
-                forecast: nextForecast,
-              },
-              updatedAt: now,
-            };
-          } else {
-            const currentYear = fm.forecast[period];
-            const updatedYear = recalculateYearData({
-              ...currentYear,
-              [field]: value,
-            });
-            return {
-              ...p,
-              financialMaster: {
-                ...fm,
-                forecast: {
-                  ...fm.forecast,
-                  [period]: updatedYear,
-                },
-              },
-              updatedAt: now,
-            };
-          }
-        }),
-      }));
-    },
-    []
-  );
-
-  // 投資計画・減価償却方式・耐用年数の更新
-  const updateInvestmentPlan = useCallback(
-    (projectId: string, investmentUpdates: Partial<InvestmentPlan>) => {
-      const now = formatNowTimestamp();
-      setState((prev) => ({
-        ...prev,
-        projects: prev.projects.map((p) => {
-          if (p.id !== projectId) return p;
-          const fm = p.financialMaster;
-          const nextInvestment = recalculateInvestmentTotal({
-            ...fm.investment,
-            ...investmentUpdates,
-          });
-          const depSchedule = calculateNewDepreciationSchedule(
-            nextInvestment.totalInvestment,
-            nextInvestment.depreciationMethod,
-            nextInvestment.usefulLifeYears
-          );
-          const baseDep = fm.historical.yMinus1.depreciation;
-
-          const nextForecast = {
-            y1: recalculateYearData({
-              ...fm.forecast.y1,
-              depreciation: baseDep + depSchedule.y1,
-            }),
-            y2: recalculateYearData({
-              ...fm.forecast.y2,
-              depreciation: baseDep + depSchedule.y2,
-            }),
-            y3: recalculateYearData({
-              ...fm.forecast.y3,
-              depreciation: baseDep + depSchedule.y3,
-            }),
-          };
-
-          return {
-            ...p,
-            targetAmount: `${nextInvestment.subsidyRequested.toLocaleString()}万円`,
-            targetAmountManYen: nextInvestment.subsidyRequested,
-            financialMaster: {
-              ...fm,
-              investment: nextInvestment,
-              forecast: nextForecast,
-            },
-            updatedAt: now,
-          };
-        }),
-      }));
-    },
-    []
-  );
-
-  // 収支計画確定（Gate 2 通過・ロック）
-  const lockFinancialPlan = useCallback((projectId: string) => {
-    const now = formatNowTimestamp();
-    setState((prev) => ({
-      ...prev,
-      projects: prev.projects.map((p) => {
-        if (p.id !== projectId) return p;
-        const earlyStatuses: ProjectStatus[] = [
-          '未着手',
-          'ヒアリング中',
-          'マスター作成済',
-          '収支計画作成中',
-        ];
-        const nextStatus: ProjectStatus = earlyStatuses.includes(p.status)
-          ? '申請書作成中'
-          : p.status;
-
-        const nextGates = p.gates.map((g) =>
-          g.id === 'gate-2' ? { ...g, isPassed: true, passedAt: now } : g
-        );
-        const nextTasks = p.scheduleTasks.map((t) => {
-          if (t.id === 'task-4' || t.id === 'task-5' || t.id === 'task-6') {
-            return { ...t, status: 'completed' as const };
-          }
-          if (t.id === 'task-7' && t.status === 'not_started') {
-            return { ...t, status: 'in_progress' as const };
-          }
-          return t;
-        });
-
-        return {
-          ...p,
-          status: nextStatus,
-          financialMaster: {
-            ...p.financialMaster,
-            status: 'locked',
-            lockedAt: now,
-          },
-          gates: nextGates,
-          scheduleTasks: nextTasks,
-          updatedAt: now,
-        };
-      }),
-    }));
-  }, []);
-
-  // 収支計画ロック解除（再編集）
-  const unlockFinancialPlan = useCallback((projectId: string) => {
-    const now = formatNowTimestamp();
-    setState((prev) => ({
-      ...prev,
-      projects: prev.projects.map((p) => {
-        if (p.id !== projectId) return p;
-        const nextGates = p.gates.map((g) =>
-          g.id === 'gate-2' ? { ...g, isPassed: false, passedAt: undefined } : g
-        );
-        const nextTasks = p.scheduleTasks.map((t) =>
-          t.id === 'task-6' ? { ...t, status: 'in_progress' as const } : t
-        );
-        return {
-          ...p,
-          status: p.status === '申請書作成中' ? '収支計画作成中' : p.status,
-          financialMaster: {
-            ...p.financialMaster,
-            status: 'draft',
-            lockedAt: undefined,
-          },
-          gates: nextGates,
-          scheduleTasks: nextTasks,
-          updatedAt: now,
-        };
-      }),
-    }));
-  }, []);
-
-  const updateSubsidySectionLength = useCallback(
-    (
-      projectId: string,
-      subsidyType: SubsidyType,
-      sectionId: string,
-      selectedLength: '200' | '500' | 'custom'
-    ) => {
-      setState((prev) => ({
-        ...prev,
-        projects: prev.projects.map((p) => {
-          if (p.id !== projectId) return p;
-          const doc = p.subsidies[subsidyType];
-          return {
-            ...p,
-            subsidies: {
-              ...p.subsidies,
-              [subsidyType]: {
-                ...doc,
-                sections: doc.sections.map((sec) =>
-                  sec.id === sectionId ? { ...sec, selectedLength } : sec
-                ),
-              },
-            },
-          };
-        }),
-      }));
-    },
-    []
-  );
-
-  const regenerateSubsidySection = useCallback(
-    (projectId: string, subsidyType: SubsidyType, sectionId: string) => {
-      setState((prev) => ({
-        ...prev,
-        projects: prev.projects.map((p) => {
-          if (p.id !== projectId) return p;
-          const doc = p.subsidies[subsidyType];
-          const updatedSections = doc.sections.map((sec) => {
-            if (sec.id !== sectionId) return sec;
-            let nextText =
-              sec.selectedLength === '200'
-                ? sec.text200
-                : sec.selectedLength === '500'
-                  ? sec.text500
-                  : sec.customText;
-
-            if (
-              prev.promptSuggestionApplied &&
-              sec.sourceMasterIds.includes('master-4') &&
-              !nextText.includes('回収期間')
-            ) {
-              nextText = interpolateTags(
-                `${nextText} なお総投資額{設備投資額}に対する投資回収期間は年間キャッシュフロー増加額（約{年間CF増加額}）ベースで約{回収年数}と具体試算している。`,
-                p
-              );
-            } else {
-              nextText = interpolateTags(nextText, p);
-            }
-
-            return {
-              ...sec,
-              currentText: nextText,
-              aiBaselineText: nextText,
-              isModified: false,
-            };
-          });
-
-          return {
-            ...p,
-            subsidies: {
-              ...p.subsidies,
-              [subsidyType]: {
-                ...doc,
-                status: doc.status === '未作成' ? '下書き' : doc.status,
-                sections: updatedSections,
-              },
-            },
-            updatedAt: formatNowTimestamp(),
-          };
-        }),
-      }));
-    },
-    []
-  );
-
-  const updateSubsidySectionText = useCallback(
-    (
-      projectId: string,
-      subsidyType: SubsidyType,
-      sectionId: string,
-      currentText: string
-    ) => {
-      setState((prev) => ({
-        ...prev,
-        projects: prev.projects.map((p) => {
-          if (p.id !== projectId) return p;
-          const doc = p.subsidies[subsidyType];
-          return {
-            ...p,
-            subsidies: {
-              ...p.subsidies,
-              [subsidyType]: {
-                ...doc,
-                sections: doc.sections.map((sec) =>
-                  sec.id === sectionId
-                    ? {
-                        ...sec,
-                        currentText,
-                        isModified:
-                          currentText.trim() !== sec.aiBaselineText.trim(),
-                      }
-                    : sec
-                ),
-              },
-            },
-          };
-        }),
-      }));
-    },
-    []
-  );
-
-  const replaceTagsInSubsidyDocument = useCallback(
-    (projectId: string, subsidyType: SubsidyType) => {
-      setState((prev) => ({
-        ...prev,
-        projects: prev.projects.map((p) => {
-          if (p.id !== projectId) return p;
-          const doc = p.subsidies[subsidyType];
-          const updatedSections = doc.sections.map((sec) => {
-            const replaced = interpolateTags(sec.currentText, p);
-            return {
-              ...sec,
-              currentText: replaced,
-              isModified: replaced.trim() !== sec.aiBaselineText.trim(),
-            };
-          });
-          return {
-            ...p,
-            subsidies: {
-              ...p.subsidies,
-              [subsidyType]: {
-                ...doc,
-                sections: updatedSections,
-              },
-            },
-          };
-        }),
-      }));
-    },
-    []
-  );
-
-  const saveSubsidyDocument = useCallback(
-    (
-      projectId: string,
-      subsidyType: SubsidyType,
-      explicitStatus?: DocumentStatus
-    ): number => {
-      let recordedCount = 0;
-      const now = formatNowTimestamp();
-
+  const duplicateCallRound = useCallback(
+    (sourceRoundId: string, newVersionCode: string) => {
+      const newRoundId = `round-ver-${Date.now()}`;
       setState((prev) => {
-        const target = prev.projects.find((p) => p.id === projectId);
-        if (!target) return prev;
-
-        const doc = target.subsidies[subsidyType];
-        const newDiffEntries: DiffLog[] = [];
-
-        const updatedSections = doc.sections.map((sec) => {
-          const aiClean = sec.aiBaselineText.trim();
-          const humanClean = sec.currentText.trim();
-          if (aiClean && humanClean && aiClean !== humanClean) {
-            newDiffEntries.push({
-              id: `diff-${Date.now()}-${sec.id}`,
-              projectId: target.id,
-              projectName: target.companyName,
-              subsidyType,
-              sectionTitle: sec.title,
-              aiText: sec.aiBaselineText,
-              humanText: sec.currentText,
-              editorName:
-                target.writerName && target.writerName !== '未割当'
-                  ? target.writerName
-                  : '書類作成担当者',
-              timestamp: now,
-            });
-            return {
-              ...sec,
-              aiBaselineText: sec.currentText,
-              isModified: false,
-            };
-          }
-          return { ...sec, isModified: false };
-        });
-
-        recordedCount = newDiffEntries.length;
-
-        const nextDocStatus: DocumentStatus =
-          explicitStatus ??
-          (doc.status === '完成'
-            ? '完成'
-            : newDiffEntries.length > 0 || doc.status === '下書き'
-              ? '修正中'
-              : '下書き');
-
-        const earlyProjectStatuses: ProjectStatus[] = [
-          '未着手',
-          'ヒアリング中',
-          'マスター作成済',
-          '収支計画作成中',
-        ];
-        const nextProjectStatus: ProjectStatus = earlyProjectStatuses.includes(
-          target.status
-        )
-          ? '申請書作成中'
-          : target.status;
-
+        const source = prev.callRounds.find((r) => r.id === sourceRoundId);
+        if (!source) return prev;
+        const duplicated: SubsidyVersionRound = {
+          ...JSON.parse(JSON.stringify(source)),
+          id: newRoundId,
+          versionCode: newVersionCode || `${source.versionCode} (複製)`,
+          isLatest: false,
+          createdAt: formatNow(),
+        };
         return {
           ...prev,
-          diffLogs: [...newDiffEntries, ...prev.diffLogs],
-          projects: prev.projects.map((p) =>
-            p.id === projectId
-              ? {
-                  ...p,
-                  status: nextProjectStatus,
-                  updatedAt: now,
-                  subsidies: {
-                    ...p.subsidies,
-                    [subsidyType]: {
-                      ...doc,
-                      status: nextDocStatus,
-                      lastSavedAt: now,
-                      sections: updatedSections,
-                    },
-                  },
-                }
-              : p
-          ),
+          callRounds: [...prev.callRounds, duplicated],
+          activeVersionId: newRoundId,
         };
       });
-
-      return recordedCount;
+      return newRoundId;
     },
     []
   );
-
-  const updateSubsidyStatus = useCallback(
-    (projectId: string, subsidyType: SubsidyType, status: DocumentStatus) => {
-      const now = formatNowTimestamp();
-      setState((prev) => ({
-        ...prev,
-        projects: prev.projects.map((p) => {
-          if (p.id !== projectId) return p;
-          const doc = p.subsidies[subsidyType];
-          return {
-            ...p,
-            updatedAt: now,
-            subsidies: {
-              ...p.subsidies,
-              [subsidyType]: {
-                ...doc,
-                status,
-                lastSavedAt: now,
-              },
-            },
-          };
-        }),
-      }));
-    },
-    []
-  );
-
-  // 文章モジュールライブラリのCRUD
-  const addTextModule = useCallback((mod: Omit<TextModule, 'id'>) => {
-    const newId = `mod-${Date.now()}`;
-    setState((prev) => ({
-      ...prev,
-      textModules: [{ ...mod, id: newId }, ...prev.textModules],
-    }));
-  }, []);
-
-  const updateTextModule = useCallback(
-    (id: string, updates: Omit<TextModule, 'id'>) => {
-      setState((prev) => ({
-        ...prev,
-        textModules: prev.textModules.map((m) =>
-          m.id === id ? { ...updates, id } : m
-        ),
-      }));
-    },
-    []
-  );
-
-  const deleteTextModule = useCallback((id: string) => {
-    setState((prev) => ({
-      ...prev,
-      textModules: prev.textModules.filter((m) => m.id !== id),
-    }));
-  }, []);
-
-  // 手動突合チェックリストの保存
-  const toggleManualCheck = useCallback((projectId: string, checkId: string) => {
-    setState((prev) => ({
-      ...prev,
-      projects: prev.projects.map((p) => {
-        if (p.id !== projectId) return p;
-        return {
-          ...p,
-          manualChecks: {
-            ...p.manualChecks,
-            [checkId]: !p.manualChecks[checkId],
-          },
-          updatedAt: formatNowTimestamp(),
-        };
-      }),
-    }));
-  }, []);
-
-  // AI整合性クロスチェック実行アクション（M7・M8対応）
-  const runAICrossCheck = useCallback(
-    (
-      projectId: string,
-      subsidyType: SubsidyType = '新事業進出補助金'
-    ): AICrossCheckResult | null => {
-      const now = formatNowTimestamp();
-      let generatedResult: AICrossCheckResult | null = null;
-
-      setState((prev) => {
-        const target = prev.projects.find((p) => p.id === projectId);
-        if (!target) return prev;
-
-        const currentRound =
-          prev.callRounds.find((r) => r.id === prev.activeCallRoundId) ??
-          prev.callRounds[0];
-        const activeThresholds = currentRound?.thresholds ?? prev.thresholds;
-
-        const checkItems = buildConsistencyCheckItems(
-          target,
-          subsidyType,
-          activeThresholds
-        );
-        const reqEval = evaluateSubsidyRequirements(
-          target.financialMaster,
-          activeThresholds
-        );
-
-        const issues: AICrossCheckIssue[] = [];
-
-        if (target.financialMaster.status !== 'locked') {
-          issues.push({
-            severity: 'warning',
-            targetSection: '収支計画マスター（Gate 2）',
-            title: '収支計画マスターが未確定（下書き状態）です',
-            description:
-              '財務計画がロックされていないため、数値変更による手戻りリスクが残っています。',
-            recommendation:
-              '「03. 収支計画マスター」タブにて公募要件を確認し、計画確定（Gate 2通過）を実行してください。',
-          });
-        }
-
-        checkItems.forEach((item) => {
-          if (item.status === 'mismatch') {
-            issues.push({
-              severity: 'error',
-              targetSection: `${subsidyType} · ${item.category}`,
-              title: `数値不整合の検出: ${item.label}`,
-              description: `抽出値「${item.documentSnippet}」に対し、収支計画マスターは「${item.financialValue}」となっています。`,
-              recommendation: item.note,
-            });
-          } else if (item.status === 'unverified') {
-            issues.push({
-              severity: 'warning',
-              targetSection: `${subsidyType} · ${item.category}`,
-              title: `定量根拠の補強推奨: ${item.label}`,
-              description: `${item.documentSnippet}（収支マスター試算値: ${item.financialValue}）`,
-              recommendation: item.note,
-            });
-          }
-        });
-
-        if (!reqEval.shinJigyo.isVaPassed) {
-          issues.push({
-            severity: 'error',
-            targetSection: '収支計画マスター · 公募要件',
-            title: `付加価値額の年平均成長率（${reqEval.vaGrowthAnnual}%）が目標値（${activeThresholds.shinJigyo.valueAddedGrowthRateAnnual}%）未満`,
-            description:
-              '新事業進出補助金の付加価値額成長率要件を満たしていません。このままでは形式不備・不採択となる可能性が極めて高い状態です。',
-            recommendation:
-              '将来3年目（Y3）の営業利益または人件費計画を見直し、付加価値額伸び率を引き上げてください。',
-          });
-        }
-
-        if (!reqEval.shinJigyo.isWagePassed) {
-          issues.push({
-            severity: 'error',
-            targetSection: '収支計画マスター · 賃上げ要件',
-            title: `一人当たり給与支給総額の年平均成長率（${reqEval.perCapitaWageGrowthAnnual}%）が要件（${reqEval.shinJigyo.targetPerCapitaWageGrowth}%）未満`,
-            description:
-              '一人当たり給与支給総額の年平均成長率が現行公募回の基準を下回っています。',
-            recommendation:
-              '将来3年目（Y3）の給与支給総額または採用計画を見直し、一人当たり賃上げ率を満たしてください。',
-          });
-        }
-
-        if (!reqEval.shinJigyo.isMinSubsidyPassed) {
-          issues.push({
-            severity: 'error',
-            targetSection: '収支計画マスター · 補助下限要件',
-            title: `補助金額が下限（${reqEval.shinJigyo.minSubsidyAmount.toLocaleString()}万円）を下回っています`,
-            description: `新事業進出補助金の下限額（${reqEval.shinJigyo.minSubsidyAmount.toLocaleString()}万円）に対し、申請希望額または換算額が不足しています。`,
-            recommendation:
-              '投資対象設備の範囲を見直すか、小規模事業者持続化補助金・東京都助成事業を主軸に検討してください。',
-          });
-        }
-
-        if (issues.length === 0) {
-          issues.push({
-            severity: 'info',
-            targetSection: '全セクション横断監査',
-            title: '定性ストーリー・算定変数・定量収支計画の完全整合を確認',
-            description:
-              '投資総額・内訳・算定根拠（単価×客数）・3年後売上目標・営業利益率・投資回収年数・人員および賃上げ計画のすべてが矛盾なく一致しています。',
-            recommendation:
-              'このまま顧客最終確認（W7）および電子申請（Gate 4）工程へ進行可能です。',
-          });
-        }
-
-        const errorCount = issues.filter((i) => i.severity === 'error').length;
-        const warnCount = issues.filter((i) => i.severity === 'warning').length;
-        const overallScore = Math.max(
-          35,
-          Math.min(100, 100 - errorCount * 20 - warnCount * 6)
-        );
-        const isPass = errorCount === 0 && overallScore >= 80;
-
-        generatedResult = {
-          timestamp: now,
-          overallScore,
-          isPass,
-          summary: isPass
-            ? `監査スコア ${overallScore}点：重大な数値矛盾は検出されませんでした（軽微な補強提案 ${warnCount}件）。Gate 3（整合性チェック）通過基準を満たしています。`
-            : `監査スコア ${overallScore}点：修正が必要な数値矛盾・要件未達が ${errorCount}件、確認推奨事項が ${warnCount}件検出されました。提出前に必ず解消してください。`,
-          issues,
-        };
-
-        const nextGates = isPass
-          ? target.gates.map((g) =>
-              g.id === 'gate-3'
-                ? { ...g, isPassed: true, passedAt: g.passedAt ?? now }
-                : g
-            )
-          : target.gates;
-        const nextTasks = isPass
-          ? target.scheduleTasks.map((t) =>
-              t.id === 'task-8' ? { ...t, status: 'completed' as const } : t
-            )
-          : target.scheduleTasks;
-
-        return {
-          ...prev,
-          projects: prev.projects.map((p) =>
-            p.id === projectId
-              ? {
-                  ...p,
-                  lastAICrossCheck: generatedResult ?? undefined,
-                  gates: nextGates,
-                  scheduleTasks: nextTasks,
-                  status:
-                    isPass && p.status === '申請書作成中'
-                      ? '社内レビュー中'
-                      : p.status,
-                  updatedAt: now,
-                }
-              : p
-          ),
-        };
-      });
-
-      return generatedResult;
-    },
-    []
-  );
-
-  // マスター構成テンプレート管理
-  const addMasterTemplate = useCallback((title: string, prompt: string) => {
-    const newId = `master-${Date.now()}`;
-    setState((prev) => {
-      const newTemplate = {
-        id: newId,
-        title: title.trim(),
-        prompt: prompt.trim(),
-      };
-      return {
-        ...prev,
-        masterTemplates: [...prev.masterTemplates, newTemplate],
-        projects: prev.projects.map((p) => ({
-          ...p,
-          masterItems: [
-            ...p.masterItems,
-            {
-              id: newId,
-              title: newTemplate.title,
-              prompt: newTemplate.prompt,
-              content: '',
-            },
-          ],
-        })),
-      };
-    });
-  }, []);
-
-  const updateMasterTemplate = useCallback(
-    (id: string, title: string, prompt: string) => {
-      setState((prev) => ({
-        ...prev,
-        masterTemplates: prev.masterTemplates.map((tpl) =>
-          tpl.id === id ? { ...tpl, title, prompt } : tpl
-        ),
-        projects: prev.projects.map((p) => ({
-          ...p,
-          masterItems: p.masterItems.map((m) =>
-            m.id === id ? { ...m, title, prompt } : m
-          ),
-        })),
-      }));
-    },
-    []
-  );
-
-  const deleteMasterTemplate = useCallback((id: string) => {
-    setState((prev) => ({
-      ...prev,
-      masterTemplates: prev.masterTemplates.filter((tpl) => tpl.id !== id),
-      projects: prev.projects.map((p) => ({
-        ...p,
-        masterItems: p.masterItems.filter((m) => m.id !== id),
-      })),
-    }));
-  }, []);
-
-  const moveMasterTemplate = useCallback(
-    (id: string, direction: 'up' | 'down') => {
-      setState((prev) => {
-        const idx = prev.masterTemplates.findIndex((t) => t.id === id);
-        if (idx < 0) return prev;
-        const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
-        if (swapIdx < 0 || swapIdx >= prev.masterTemplates.length) return prev;
-
-        const nextTemplates = [...prev.masterTemplates];
-        [nextTemplates[idx], nextTemplates[swapIdx]] = [
-          nextTemplates[swapIdx],
-          nextTemplates[idx],
-        ];
-
-        const orderIds = nextTemplates.map((t) => t.id);
-
-        return {
-          ...prev,
-          masterTemplates: nextTemplates,
-          projects: prev.projects.map((p) => {
-            const byId = new Map(p.masterItems.map((m) => [m.id, m]));
-            const ordered = orderIds
-              .map((oid) => byId.get(oid))
-              .filter((item): item is HearingMasterItem => Boolean(item));
-            return { ...p, masterItems: ordered };
-          }),
-        };
-      });
-    },
-    []
-  );
-
-  const applyPromptImprovementSuggestion = useCallback(() => {
-    const appendSentence =
-      '設備導入による投資回収シミュレーション（年数・内訳）を必ず具体数値で明記すること。';
-
-    setState((prev) => {
-      const targetTemplate =
-        prev.masterTemplates.find((t) => t.id === 'master-4') ??
-        prev.masterTemplates[prev.masterTemplates.length - 1];
-      if (!targetTemplate) return prev;
-
-      const targetId = targetTemplate.id;
-      const updatePromptText = (oldPrompt: string) =>
-        oldPrompt.includes('投資回収シミュレーション')
-          ? oldPrompt
-          : `${oldPrompt.trim()} ${appendSentence}`;
-
-      return {
-        ...prev,
-        promptSuggestionApplied: true,
-        masterTemplates: prev.masterTemplates.map((tpl) =>
-          tpl.id === targetId
-            ? { ...tpl, prompt: updatePromptText(tpl.prompt) }
-            : tpl
-        ),
-        projects: prev.projects.map((p) => ({
-          ...p,
-          masterItems: p.masterItems.map((m) =>
-            m.id === targetId
-              ? { ...m, prompt: updatePromptText(m.prompt) }
-              : m
-          ),
-        })),
-      };
-    });
-  }, []);
-
-  // R3: 公募回の切替・複製・編集・削除・しきい値更新
-  const setActiveCallRound = useCallback((roundId: string) => {
-    setState((prev) => {
-      const target = prev.callRounds.find((r) => r.id === roundId);
-      if (!target) return prev;
-      return {
-        ...prev,
-        activeCallRoundId: roundId,
-        thresholds: JSON.parse(
-          JSON.stringify(target.thresholds)
-        ) as SubsidyRequirementThresholds,
-      };
-    });
-  }, []);
-
-  const duplicateCallRound = useCallback((sourceRoundId: string): string => {
-    const newId = `round-${Date.now()}`;
-    setState((prev) => {
-      const src =
-        prev.callRounds.find((r) => r.id === sourceRoundId) ??
-        prev.callRounds[0];
-      if (!src) return prev;
-      const cloned: CallRound = {
-        ...(JSON.parse(JSON.stringify(src)) as CallRound),
-        id: newId,
-        name: `${src.name}（複製）`,
-        effectiveDate: new Date().toISOString().slice(0, 10),
-      };
-      return {
-        ...prev,
-        callRounds: [cloned, ...prev.callRounds],
-      };
-    });
-    return newId;
-  }, []);
 
   const updateCallRound = useCallback(
-    (
-      roundId: string,
-      updates: Partial<
-        Pick<
-          CallRound,
-          | 'name'
-          | 'effectiveDate'
-          | 'memo'
-          | 'thresholds'
-          | 'sectionCharLimits'
-          | 'reviewCriteria'
-          | 'generationPrompts'
-        >
-      >
-    ) => {
-      setState((prev) => {
-        const nextRounds = prev.callRounds.map((r) =>
+    (roundId: string, updates: Partial<SubsidyVersionRound>) => {
+      setState((prev) => ({
+        ...prev,
+        callRounds: prev.callRounds.map((r) =>
           r.id === roundId ? { ...r, ...updates } : r
-        );
-        const updatedActive = nextRounds.find(
-          (r) => r.id === prev.activeCallRoundId
-        );
-        return {
-          ...prev,
-          callRounds: nextRounds,
-          thresholds: updatedActive
-            ? (JSON.parse(
-                JSON.stringify(updatedActive.thresholds)
-              ) as SubsidyRequirementThresholds)
-            : prev.thresholds,
-        };
-      });
+        ),
+      }));
     },
     []
   );
 
-  const deleteCallRound = useCallback((roundId: string) => {
-    setState((prev) => {
-      if (roundId === prev.activeCallRoundId || prev.callRounds.length <= 1) {
-        return prev;
-      }
-      return {
+  const updateTrackInRound = useCallback(
+    (roundId: string, trackId: SubsidyTrackId, updates: Partial<SubsidyTrack>) => {
+      setState((prev) => ({
         ...prev,
-        callRounds: prev.callRounds.filter((r) => r.id !== roundId),
-      };
-    });
+        callRounds: prev.callRounds.map((r) => {
+          if (r.id !== roundId) return r;
+          const nextTracks = r.tracks.map((t) =>
+            t.id === trackId ? { ...t, ...updates } : t
+          );
+          return { ...r, tracks: nextTracks };
+        }),
+      }));
+    },
+    []
+  );
+
+  const updateRequirementsInRound = useCallback(
+    (roundId: string, updates: Partial<SubsidyRequirements>) => {
+      setState((prev) => ({
+        ...prev,
+        callRounds: prev.callRounds.map((r) => {
+          if (r.id !== roundId) return r;
+          return {
+            ...r,
+            requirements: {
+              ...r.requirements,
+              ...updates,
+            },
+          };
+        }),
+      }));
+    },
+    []
+  );
+
+  const setActiveVersionId = useCallback((versionId: string) => {
+    setState((prev) => ({ ...prev, activeVersionId: versionId }));
   }, []);
 
-  // 現在有効な公募回のしきい値更新（既存互換＋R3連動）
-  const updateThresholds = useCallback(
-    (thresholds: SubsidyRequirementThresholds, targetRoundId?: string) => {
-      setState((prev) => {
-        const rid = targetRoundId ?? prev.activeCallRoundId;
-        const nextRounds = prev.callRounds.map((r) =>
-          r.id === rid ? { ...r, thresholds } : r
-        );
-        return {
-          ...prev,
-          callRounds: nextRounds,
-          thresholds:
-            rid === prev.activeCallRoundId ? thresholds : prev.thresholds,
-        };
-      });
+  // ==========================================
+  // 初期前提値 & 仮の値管理
+  // ==========================================
+
+  const updateInitialDefaults = useCallback(
+    (updates: Partial<InitialProjectDefaults>) => {
+      setState((prev) => ({
+        ...prev,
+        initialDefaults: {
+          ...prev.initialDefaults,
+          ...updates,
+        },
+      }));
     },
     []
   );
 
-  // R2: 審査項目CRUD（公募回単位）
-  const updateReviewCriteriaForRound = useCallback(
-    (roundId: string, reviewCriteria: ReviewCriterion[]) => {
+  const updateTentativeItem = useCallback(
+    (id: string, updates: Partial<TentativeItem>) => {
       setState((prev) => ({
         ...prev,
-        callRounds: prev.callRounds.map((r) =>
-          r.id === roundId ? { ...r, reviewCriteria } : r
+        tentativeItems: prev.tentativeItems.map((item) =>
+          item.id === id ? { ...item, ...updates } : item
         ),
       }));
     },
     []
   );
 
-  // M5: 文章生成プロンプト更新（公募回単位）
-  const updateGenerationPrompt = useCallback(
-    (roundId: string, promptId: string, promptText: string) => {
-      setState((prev) => ({
-        ...prev,
-        callRounds: prev.callRounds.map((r) =>
-          r.id === roundId
-            ? {
-                ...r,
-                generationPrompts: r.generationPrompts.map((gp) =>
-                  gp.id === promptId ? { ...gp, promptText } : gp
-                ),
-              }
-            : r
-        ),
-      }));
-    },
-    []
-  );
-
-  // W2: 導入効果試算マスタの更新
-  const updateEffectEstimates = useCallback(
-    (effectEstimates: EffectEstimateItem[]) => {
-      setState((prev) => ({
-        ...prev,
-        effectEstimates,
-      }));
-    },
-    []
-  );
-
-  // 整合性クロスチェックプロンプトの更新
-  const updateCrossCheckPrompt = useCallback((crossCheckPrompt: string) => {
+  const addTentativeItem = useCallback((item: Omit<TentativeItem, 'id'>) => {
+    const newItem: TentativeItem = {
+      ...item,
+      id: `tent-${Date.now()}`,
+    };
     setState((prev) => ({
       ...prev,
-      crossCheckPrompt,
+      tentativeItems: [newItem, ...prev.tentativeItems],
     }));
   }, []);
 
-  // §5: resetAllDataではUI状態（subsidy_mock_ui_v3）は消さない
-  const resetAllData = useCallback(() => {
-    try {
-      window.localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // Ignore storage error
+  // ==========================================
+  // バックアップ (JSON Export / Import)
+  // ==========================================
+
+  const exportBackup = useCallback(() => {
+    exportDataAsJsonFile(state, `subsidy_mock_backup_${Date.now()}.json`);
+  }, [state]);
+
+  const importBackup = useCallback((jsonData: unknown) => {
+    if (!jsonData || typeof jsonData !== 'object') {
+      throw new Error('インポートデータが不正な形式です。');
     }
-    setState(createInitialAppState());
+    const candidate = jsonData as SubsidyAppState;
+    if (
+      Array.isArray(candidate.projects) &&
+      Array.isArray(candidate.callRounds) &&
+      candidate.initialDefaults
+    ) {
+      setState(candidate);
+      saveToLocalStorage(APP_STORAGE_KEY, candidate);
+      return true;
+    }
+    throw new Error('必要なプロパティ（projects, callRounds）が不足しています。');
+  }, []);
+
+  // 初期状態への完全リセット
+  const resetAllData = useCallback(() => {
+    const fresh = createInitialAppState();
+    setState(fresh);
+    saveToLocalStorage(APP_STORAGE_KEY, fresh);
   }, []);
 
   return {
     state,
     selectedProject,
     activeCallRound,
-    restoredFromTourReload,
-    clearRestoredTourFlag,
-    replaceState,
+    projectAppliedRound,
+    projectAppliedTrack,
     setRole,
     setActiveScreen,
     setWorkspaceTab,
+    setDisplayCurrencyUnit,
+    setRoundingMode,
     selectProject,
     addProject,
     updateProjectStatus,
-    updateTaskStatus,
-    setGatePassed,
-    updateRawHearingText,
-    updateHearingVariables,
-    importSampleHearingSheetExcel,
-    generateMasterFromHearing,
-    saveMasterItem,
-    syncMasterToSubsidies,
-    applyHearingDriversToForecast,
-    updateSpecialFlags,
-    updateFinancialField,
-    updateInvestmentPlan,
+    updateProjectTrack,
+    updatePlanningYears,
+    updateEmployeeCountMethod,
+    updateAnnualSalesEstimateMethod,
+    updateFiscalMonth,
+    overrideFiscalYears,
+    updatePeriodMonths,
+    updateBSItem,
+    updatePLItem,
+    updateInvestment,
+    toggleWageSpecial,
     lockFinancialPlan,
     unlockFinancialPlan,
-    updateSubsidySectionLength,
-    regenerateSubsidySection,
-    updateSubsidySectionText,
-    replaceTagsInSubsidyDocument,
-    saveSubsidyDocument,
-    updateSubsidyStatus,
-    addTextModule,
-    updateTextModule,
-    deleteTextModule,
-    toggleManualCheck,
-    runAICrossCheck,
-    addMasterTemplate,
-    updateMasterTemplate,
-    deleteMasterTemplate,
-    moveMasterTemplate,
-    applyPromptImprovementSuggestion,
-    setActiveCallRound,
+    updateTaskStatus,
+    setGatePassed,
+    saveSectionText,
     duplicateCallRound,
     updateCallRound,
-    deleteCallRound,
-    updateThresholds,
-    updateReviewCriteriaForRound,
-    updateGenerationPrompt,
-    updateEffectEstimates,
-    updateCrossCheckPrompt,
+    updateTrackInRound,
+    updateRequirementsInRound,
+    setActiveVersionId,
+    updateInitialDefaults,
+    updateTentativeItem,
+    addTentativeItem,
+    exportBackup,
+    importBackup,
     resetAllData,
   };
 }

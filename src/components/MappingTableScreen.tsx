@@ -21,7 +21,12 @@ interface DerivedCellInfo {
 }
 
 function getHandlingType(subsidyType: SubsidyType): '全文' | '要約' | '補強' {
-  if (subsidyType === '新事業進出補助金') return '全文';
+  if (
+    subsidyType === '新事業進出・ものづくり商業サービス補助金' ||
+    subsidyType === '新事業進出補助金'
+  ) {
+    return '全文';
+  }
   if (subsidyType === '小規模事業者持続化補助金') return '要約';
   return '補強';
 }
@@ -59,13 +64,16 @@ export const MappingTableScreen: React.FC<MappingTableScreenProps> = ({
   const qualitativeRows = useMemo(() => {
     return project.masterItems.map((masterItem, idx) => {
       const cells: Record<SubsidyType, DerivedCellInfo[]> = {
+        '新事業進出・ものづくり商業サービス補助金': [],
         新事業進出補助金: [],
         小規模事業者持続化補助金: [],
         東京都経営強化基盤事業: [],
       };
 
       SUBSIDY_TYPES.forEach((st) => {
-        const matchedSections = project.subsidies[st].sections.filter((sec) =>
+        const subDoc = project.subsidies[st];
+        if (!subDoc) return;
+        const matchedSections = subDoc.sections.filter((sec) =>
           sec.sourceMasterIds.includes(masterItem.id)
         );
         cells[st] = matchedSections.map((sec) => ({
@@ -73,7 +81,7 @@ export const MappingTableScreen: React.FC<MappingTableScreenProps> = ({
           sectionTitle: sec.title,
           handlingLabel: getHandlingType(st),
           charLimitText: formatCharLimitDisplay(
-            sec.selectedLength,
+            sec.selectedLength || '500',
             sec.id,
             activeCallRound.sectionCharLimits
           ),
@@ -97,14 +105,17 @@ export const MappingTableScreen: React.FC<MappingTableScreenProps> = ({
     const buildEffectSectionCells = (): Record<SubsidyType, DerivedCellInfo> => {
       const out = {} as Record<SubsidyType, DerivedCellInfo>;
       SUBSIDY_TYPES.forEach((st) => {
-        const secs = project.subsidies[st].sections;
+        const subDoc = project.subsidies[st];
+        if (!subDoc) return;
+        const secs = subDoc.sections;
         const targetSec = secs[secs.length - 1] ?? secs[0];
+        if (!targetSec) return;
         out[st] = {
           sectionId: targetSec.id,
           sectionTitle: targetSec.title,
           handlingLabel: getHandlingType(st),
           charLimitText: formatCharLimitDisplay(
-            targetSec.selectedLength,
+            targetSec.selectedLength || '500',
             targetSec.id,
             activeCallRound.sectionCharLimits
           ),
