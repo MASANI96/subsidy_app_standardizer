@@ -1,14 +1,29 @@
 import React, { useMemo, useState } from 'react';
-import { Check, Lock } from 'lucide-react';
+import {
+  Calendar,
+  Check,
+  Copy,
+  ExternalLink,
+  Lock,
+  RefreshCw,
+  Share2,
+  X,
+} from 'lucide-react';
 import {
   EffectEstimateItem,
   GanttTask,
   PhaseGate,
   Project,
+  ProjectSchedule,
   Role,
+  ScheduleItem,
+  ScheduleTemplateTask,
   WorkspaceTabId,
 } from '../types';
-import { canConfirmGate, canEdit } from '../utils/permissions';
+import { canConfirmGate } from '../utils/permissions';
+import { buildShareUrl, SharePayload } from '../utils/share';
+import { isLongTermReportItem } from '../utils/scheduleBuilder';
+import { ScheduleChart } from './gantt/ScheduleChart';
 import {
   ReadOnlyRoleBadge,
   SpecTagBadge,
@@ -32,25 +47,32 @@ interface GanttScheduleProps {
   onNavigateTab: (tab: WorkspaceTabId) => void;
   onNavigateBackToList: () => void;
   onNotify: (message: string) => void;
+  scheduleTemplates?: ScheduleTemplateTask[];
+  onUpdateSchedule?: (
+    projectId: string,
+    updater: (s: ProjectSchedule) => ProjectSchedule
+  ) => void;
+  onRebuildSchedule?: (projectId: string) => void;
+  onMarkScheduleShared?: (projectId: string) => void;
 }
-
-const WEEKS = [1, 2, 3, 4, 5, 6, 7, 8];
 
 export const GanttSchedule: React.FC<GanttScheduleProps> = ({
   project,
   role,
   effectEstimate,
-  onUpdateTaskStatus,
   onToggleGatePassed,
   onNavigateTab,
   onNavigateBackToList,
   onNotify,
+  onUpdateSchedule,
+  onRebuildSchedule,
+  onMarkScheduleShared,
 }) => {
-  const [categoryFilter, setCategoryFilter] = useState<
-    'all' | 'client' | 'support'
-  >('all');
+  const [ownerFilter, setOwnerFilter] = useState<'all' | 'client' | 'support'>('all');
+  const [rangeMode, setRangeMode] = useState<'core' | 'all'>('core');
+  const [shareModalUrl, setShareModalUrl] = useState<string | null>(null);
+  const [hasCopiedUrl, setHasCopiedUrl] = useState(false);
 
-  const canEditTasks = canEdit(role, 'schedule_task_edit');
   const canConfirmGate4 = canConfirmGate(role, 'gate-4');
 
   // 最初の未通過ゲートを「現在地（アクティブゲート）」として判定
@@ -59,18 +81,33 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
     return firstUnpassed ? firstUnpassed.number : 5;
   }, [project.gates]);
 
-  const filteredTasks = useMemo(() => {
-    if (categoryFilter === 'all') return project.scheduleTasks;
-    return project.scheduleTasks.filter((t) => t.category === categoryFilter);
-  }, [project.scheduleTasks, categoryFilter]);
+  const schedule = project.schedule || { items: [], viewMode: 'month' };
+  const viewMode = schedule.viewMode || 'month';
 
+  // 担当フィルタ
+  const filteredItems = useMemo(() => {
+    let list = schedule.items;
+    if (ownerFilter !== 'all') {
+      list = list.filter((it) => it.owner === ownerFilter);
+    }
+    if (rangeMode === 'core') {
+      list = list.filter((it) => !isLongTermReportItem(it));
+    }
+    return list;
+  }, [schedule.items, ownerFilter, rangeMode]);
+
+  const hiddenReportCount = useMemo(
+    () => (rangeMode === 'core' ? schedule.items.filter((it) => isLongTermReportItem(it)).length : 0),
+    [schedule.items, rangeMode]
+  );
+
+  // 進捗サマリー
   const stats = useMemo(() => {
-    const total = project.scheduleTasks.length;
-    const completed = project.scheduleTasks.filter(
-      (t) => t.status === 'completed'
-    ).length;
-    const clientPending = project.scheduleTasks.filter(
-      (t) => t.category === 'client' && t.status !== 'completed'
+    const items = schedule.items;
+    const total = items.length;
+    const completed = items.filter((t) => t.status === 'completed').length;
+    const clientPending = items.filter(
+      (t) => t.owner === 'client' && t.status !== 'completed'
     ).length;
     return {
       total,
@@ -78,13 +115,89 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
       progressPct: total > 0 ? Math.round((completed / total) * 100) : 0,
       clientPending,
     };
-  }, [project.scheduleTasks]);
+  }, [schedule.items]);
 
   const gateDestinationTab = (gateNumber: number): WorkspaceTabId => {
     if (gateNumber === 1) return 'hearing';
     if (gateNumber === 2) return 'financial';
     if (gateNumber === 3) return 'consistency';
     return 'schedule';
+  };
+
+  // スケジュール変更ハンドラ
+  const handleScheduleItemsChange = (newItems: ScheduleItem[]) => {
+    if (!onUpdateSchedule) return;
+    // 表示していなかった項目（担当フィルタ外・事業化状況報告）はそのまま残す
+    const shownIds = new Set(filteredItems.map((it) => it.id));
+    const hiddenItems = schedule.items.filter((it) => !shownIds.has(it.id));
+    onUpdateSchedule(project.id, (s) => ({
+      ...s,
+      items: [...newItems, ...hiddenItems],
+    }));
+  };
+
+  // 表示単位（月／週）切替
+  const handleViewModeToggle = (mode: 'month' | 'week') => {
+    if (!onUpdateSchedule) return;
+    onUpdateSchedule(project.id, (s) => ({ ...s, viewMode: mode }));
+  };
+
+  // 締切日から再計算
+  const handleRebuildSchedule = () => {
+    const manualCount = schedule.items.filter((it) => it.manual).length;
+    if (manualCount > 0) {
+      const ok = window.confirm(
+        `手動で変更した${manualCount}件は維持されます。再計算しますか？`
+      );
+      if (!ok) return;
+    }
+    if (onRebuildSchedule) {
+      onRebuildSchedule(project.id);
+      onNotify('締切日からスケジュールを再計算しました。');
+    }
+  };
+
+  // 共有URL発行
+  const handleShare = () => {
+    const nowStr = new Date().toLocaleString('ja-JP', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const payload: SharePayload = {
+      v: 1,
+      companyName: project.companyName,
+      issuedAt: nowStr,
+      items: schedule.items,
+    };
+
+    const url = buildShareUrl(payload);
+    try {
+      if (navigator?.clipboard?.writeText) {
+        navigator.clipboard.writeText(url).catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
+
+    onMarkScheduleShared?.(project.id);
+    setShareModalUrl(url);
+    setHasCopiedUrl(true);
+    onNotify('共有URLを発行し、クリップボードにコピーしました。');
+  };
+
+  const copyModalUrl = () => {
+    if (!shareModalUrl) return;
+    try {
+      navigator.clipboard.writeText(shareModalUrl).then(() => {
+        setHasCopiedUrl(true);
+        setTimeout(() => setHasCopiedUrl(false), 2500);
+      });
+    } catch {
+      // ignore
+    }
   };
 
   return (
@@ -102,15 +215,15 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
             </button>
             <span aria-hidden="true">·</span>
             <span>
-              ワークスペース タブ1 · 標準8週間工程・フェーズゲート管理（ロール:{' '}
+              ワークスペース タブ1 · 全体スケジュール・フェーズゲート管理（ロール:{' '}
               {role}）
             </span>
-            <SpecTagBadge tag="指示書 4-⑥ / Step6" />
+            <SpecTagBadge tag="指示書 4-⑥ / Step6 / STEP F" />
             <WorkspaceEffectBadge estimate={effectEstimate} />
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-              標準工程表（ガントチャート）・フェーズゲート管理
+              全体スケジュール（申請〜事業化状況報告）
             </h1>
             {!canConfirmGate4 && (
               <ReadOnlyRoleBadge role={role} note="Gate 2〜4の確定は制限" />
@@ -126,7 +239,7 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
               {stats.progressPct}%（{stats.completed}/{stats.total}タスク）
             </span>
             {' · '}顧客側残タスク:{' '}
-            <span className="font-mono tabular-nums font-semibold">
+            <span className="font-mono tabular-nums font-semibold text-amber-700">
               {stats.clientPending}件
             </span>
           </p>
@@ -264,222 +377,233 @@ export const GanttSchedule: React.FC<GanttScheduleProps> = ({
         </div>
       )}
 
-      {/* 8-Week Standard Gantt Chart */}
+      {/* ガントチャートエリア */}
       <section
         data-guide-id="guide-gantt-chart"
         className="bg-white border border-slate-200"
       >
-        {/* Toolbar & Legend */}
-        <div className="p-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        {/* Toolbar & Filter & Actions */}
+        <div className="p-4 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-sm font-bold text-slate-900">
-              標準8週間スケジュール（顧客タスク・支援側タスク分離）
+              全体スケジュール（申請〜事業化状況報告）
             </h2>
-            <SpecTagBadge tag="指示書 4-⑥" />
-            <div className="flex items-center gap-4 text-xs text-slate-600">
-              <span className="inline-flex items-center gap-1.5">
-                <span className="w-3 h-3 bg-amber-600 inline-block" />
-                顧客担当タスク（書類準備・意思決定）
+            <div className="flex items-center gap-3 text-xs text-slate-600">
+              <span className="inline-flex items-center gap-1">
+                <span className="w-3 h-3 bg-amber-600 rounded-xs inline-block" />
+                顧客担当
               </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="w-3 h-3 bg-slate-800 inline-block" />
-                支援側タスク（分析・執筆・監査）
+              <span className="inline-flex items-center gap-1">
+                <span className="w-3 h-3 bg-slate-900 rounded-xs inline-block" />
+                支援側
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="w-2.5 h-2.5 bg-slate-900 rotate-45 inline-block" />
+                マイルストーン
               </span>
             </div>
           </div>
 
-          {/* Filter Control */}
-          <div className="flex items-center gap-1 bg-slate-100 p-0.5 border border-slate-200 self-start md:self-auto">
-            {(
-              [
-                { id: 'all', label: '全タスク表示' },
-                { id: 'client', label: '顧客タスクのみ' },
-                { id: 'support', label: '支援側タスクのみ' },
-              ] as const
-            ).map((f) => (
+          <div className="flex flex-wrap items-center gap-3">
+            {/* 担当フィルタ */}
+            <div className="flex items-center gap-1 bg-slate-100 p-0.5 border border-slate-200 rounded">
+              {(
+                [
+                  { id: 'all', label: '全タスク' },
+                  { id: 'client', label: '顧客のみ' },
+                  { id: 'support', label: '支援側のみ' },
+                ] as const
+              ).map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setOwnerFilter(f.id)}
+                  className={`px-2.5 py-1 text-xs font-medium transition-colors rounded cursor-pointer ${
+                    ownerFilter === f.id
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+
+            {/* 月／週 切替 */}
+            <div className="flex items-center gap-1 bg-slate-100 p-0.5 border border-slate-200 rounded text-xs">
+              <span className="text-slate-500 pl-1.5 flex items-center gap-1">
+                <Calendar className="w-3 h-3" />
+                表示:
+              </span>
               <button
-                key={f.id}
                 type="button"
-                onClick={() => setCategoryFilter(f.id)}
-                className={`px-3 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
-                  categoryFilter === f.id
+                onClick={() => handleViewModeToggle('month')}
+                className={`px-2 py-0.5 font-medium rounded transition-colors cursor-pointer ${
+                  viewMode === 'month'
                     ? 'bg-white text-slate-900 shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                {f.label}
+                月
               </button>
-            ))}
+              <button
+                type="button"
+                onClick={() => handleViewModeToggle('week')}
+                className={`px-2 py-0.5 font-medium rounded transition-colors cursor-pointer ${
+                  viewMode === 'week'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                週
+              </button>
+            </div>
+
+            {/* 表示範囲 切替 */}
+            <div className="flex items-center gap-1 bg-slate-100 p-0.5 border border-slate-200 rounded text-xs">
+              <span className="text-slate-500 pl-1.5">範囲:</span>
+              <button
+                type="button"
+                onClick={() => setRangeMode('core')}
+                className={`px-2 py-0.5 font-medium rounded transition-colors cursor-pointer ${
+                  rangeMode === 'core' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                申請〜精算
+              </button>
+              <button
+                type="button"
+                onClick={() => setRangeMode('all')}
+                className={`px-2 py-0.5 font-medium rounded transition-colors cursor-pointer ${
+                  rangeMode === 'all' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                全期間（事業化状況報告を含む）
+              </button>
+            </div>
+
+            {/* 締切日から再計算ボタン */}
+            <button
+              type="button"
+              onClick={handleRebuildSchedule}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded cursor-pointer transition-colors"
+              title="公募要件の締切日・採択日や決算月をもとにタスク日程を再計算します（手動変更項目は保持されます）"
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-slate-600" />
+              締切日から再計算
+            </button>
+
+            {/* 共有URLを発行ボタン */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-guide-id="guide-gantt-share"
+                onClick={handleShare}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-sky-900 bg-sky-50 hover:bg-sky-100 border border-sky-300 rounded cursor-pointer transition-colors"
+              >
+                <Share2 className="w-3.5 h-3.5 text-sky-600" />
+                共有URLを発行
+              </button>
+              {schedule.lastSharedAt && (
+                <span className="text-[11px] text-slate-500 hidden sm:inline">
+                  最終発行: {schedule.lastSharedAt}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Gantt Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-left">
-            <thead>
-              <tr className="bg-slate-100 border-b border-slate-200 text-xs font-semibold text-slate-700">
-                <th className="py-2.5 px-4 w-28 whitespace-nowrap">担当区分</th>
-                <th className="py-2.5 px-4 min-w-[280px]">
-                  工程タスク名 / フェーズゲート
-                </th>
-                <th className="py-2.5 px-3 w-32 whitespace-nowrap">進捗状態</th>
-                {WEEKS.map((w) => (
-                  <th
-                    key={w}
-                    className="py-2.5 px-2 text-center font-mono tabular-nums w-16 border-l border-slate-200 whitespace-nowrap"
-                  >
-                    W{w}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 text-xs">
-              {filteredTasks.map((task) => {
-                const isClient = task.category === 'client';
-                const isCompleted = task.status === 'completed';
-                const isInProgress = task.status === 'in_progress';
-                const canModifyThisRow = task.gateId
-                  ? canConfirmGate(role, task.gateId)
-                  : canEditTasks;
+        {hiddenReportCount > 0 && (
+          <div className="px-4 py-2 text-[11px] text-slate-500 bg-slate-50 border-b border-slate-200">
+            事業化状況報告 {hiddenReportCount} 件は非表示中です。「範囲：全期間」で表示できます。
+          </div>
+        )}
 
-                return (
-                  <tr
-                    key={task.id}
-                    className={`transition-colors ${
-                      task.isGate ? 'bg-slate-50/70' : 'hover:bg-slate-50/50'
-                    }`}
-                  >
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <span
-                        className={`inline-block px-2 py-0.5 text-[11px] font-semibold border ${
-                          isClient
-                            ? 'bg-amber-50 text-amber-900 border-amber-300'
-                            : 'bg-slate-100 text-slate-800 border-slate-300'
-                        }`}
-                      >
-                        {isClient ? '顧客タスク' : '支援側タスク'}
-                      </span>
-                    </td>
-
-                    <td className="py-3 px-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span
-                          className={`font-medium ${
-                            isCompleted
-                              ? 'text-slate-600'
-                              : 'text-slate-900 font-semibold'
-                          }`}
-                        >
-                          {task.title}
-                        </span>
-                        {task.gateId === 'gate-2' && (
-                          <button
-                            type="button"
-                            onClick={() => onNavigateTab('financial')}
-                            className="text-[11px] font-semibold text-sky-800 hover:underline whitespace-nowrap cursor-pointer"
-                          >
-                            [収支計画を開く]
-                          </button>
-                        )}
-                      </div>
-                    </td>
-
-                    <td className="py-3 px-3 whitespace-nowrap">
-                      <select
-                        aria-label={`${task.title}の進捗ステータス`}
-                        disabled={!canModifyThisRow}
-                        title={
-                          canModifyThisRow
-                            ? 'タスク進捗を更新'
-                            : `${role}ロールではこのゲートタスクの確定はできません`
-                        }
-                        value={task.status}
-                        onChange={(e) => {
-                          const next = e.target.value as GanttTask['status'];
-                          if (task.gateId === 'gate-2') {
-                            onToggleGatePassed(
-                              project.id,
-                              'gate-2',
-                              next === 'completed'
-                            );
-                            onNotify(
-                              next === 'completed'
-                                ? 'Gate 2（収支計画）を確定済に更新し、申請書編集ロックを解除しました。'
-                                : 'Gate 2を未確定に戻しました。'
-                            );
-                          } else if (task.gateId) {
-                            onToggleGatePassed(
-                              project.id,
-                              task.gateId,
-                              next === 'completed'
-                            );
-                            onNotify(
-                              `フェーズゲート「${task.title}」の状態を更新しました。`
-                            );
-                          } else {
-                            onUpdateTaskStatus(project.id, task.id, next);
-                            onNotify(
-                              `タスク「${task.title}」の状態を更新しました。`
-                            );
-                          }
-                        }}
-                        className={`border px-2 py-1 text-xs font-semibold focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer ${
-                          isCompleted
-                            ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
-                            : isInProgress
-                              ? 'bg-sky-50 text-sky-900 border-sky-300'
-                              : 'bg-white text-slate-600 border-slate-300'
-                        }`}
-                      >
-                        <option value="not_started">未着手</option>
-                        <option value="in_progress">進行中</option>
-                        <option value="completed">完了</option>
-                      </select>
-                    </td>
-
-                    {WEEKS.map((w) => {
-                      const activeInWeek =
-                        w >= task.startWeek && w <= task.endWeek;
-                      return (
-                        <td
-                          key={w}
-                          className="py-3 px-1.5 border-l border-slate-200 align-middle"
-                        >
-                          {activeInWeek && (
-                            <div
-                              className={`h-5 w-full flex items-center justify-center text-[10px] font-mono text-white ${
-                                isClient
-                                  ? isCompleted
-                                    ? 'bg-amber-600/80'
-                                    : isInProgress
-                                      ? 'bg-amber-600'
-                                      : 'bg-amber-300 text-amber-950'
-                                  : isCompleted
-                                    ? 'bg-slate-700'
-                                    : isInProgress
-                                      ? 'bg-slate-900'
-                                      : 'bg-slate-300 text-slate-800'
-                              }`}
-                            >
-                              {w === task.startWeek
-                                ? task.isGate
-                                  ? '★GATE'
-                                  : isCompleted
-                                    ? '済'
-                                    : ''
-                                : ''}
-                            </div>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        {/* ScheduleChart Component */}
+        <ScheduleChart
+          items={filteredItems}
+          viewMode={viewMode}
+          readOnly={false}
+          onChange={handleScheduleItemsChange}
+        />
       </section>
+
+      {/* 共有URL発行モーダル */}
+      {shareModalUrl && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+          <div className="max-w-lg w-full bg-white rounded-lg shadow-xl border border-slate-200 p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-full bg-sky-100 text-sky-600 flex items-center justify-center">
+                  <Share2 className="w-4 h-4" />
+                </div>
+                <h3 className="text-base font-bold text-slate-900">
+                  閲覧専用共有URLを発行しました
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShareModalUrl(null)}
+                className="text-slate-400 hover:text-slate-700 p-1 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-700">
+                共有URL（クリップボードにコピー済）
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={shareModalUrl}
+                  className="flex-1 px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-300 rounded text-slate-800 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={copyModalUrl}
+                  className="inline-flex items-center gap-1 px-3 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded transition-colors cursor-pointer"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  {hasCopiedUrl ? '済' : 'コピー'}
+                </button>
+              </div>
+            </div>
+
+            {/* 注意書き */}
+            <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-950 space-y-1 leading-relaxed">
+              <div className="font-bold flex items-center gap-1 text-amber-900">
+                <span>ご案内・注意点</span>
+              </div>
+              <ul className="list-disc list-inside space-y-0.5 text-[11px] text-amber-900/90">
+                <li>内容を変更した場合はURLを再発行してください</li>
+                <li>URLを知っている人は誰でも閲覧できます</li>
+              </ul>
+            </div>
+
+            <div className="pt-2 flex justify-between items-center">
+              <a
+                href={shareModalUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline font-semibold"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                別タブで閲覧画面を開く
+              </a>
+              <button
+                type="button"
+                onClick={() => setShareModalUrl(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded cursor-pointer"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

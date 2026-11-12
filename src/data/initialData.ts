@@ -9,18 +9,27 @@
  */
 
 import {
+  AccountMappingRule,
   BalanceSheetData,
+  ForecastNumbers,
+  ForecastPeriodKey,
   GanttTemplateTask,
   HearingItem,
   HearingMasterItem,
   HearingVariables,
+  HistoricalPeriodKey,
   InitialProjectDefaults,
+  NarrativeTemplate,
   PeriodFiscalInfo,
+  PeriodImportRecord,
   PeriodKey,
   PhaseGate,
+  PlanSimulation,
   ProfitAndLossData,
   Project,
   ProjectFinancialMaster,
+  ScheduleTemplateTask,
+  SolverCandidate,
   SubsidyAppState,
   SubsidyDocument,
   SubsidySection,
@@ -35,6 +44,9 @@ import {
   recalculateBS,
   recalculatePL,
 } from '../utils/financialCalculations';
+import { buildScheduleFromTemplate } from '../utils/scheduleBuilder';
+import { createInitialPeriodImports } from './initialPeriodImports';
+import { createDefaultExcelCellMappings } from './defaultExcelCellMappings';
 
 /** 補助金枠定義（3枠） */
 export const INITIAL_TRACKS: SubsidyTrack[] = [
@@ -245,6 +257,30 @@ export const INITIAL_CALL_ROUNDS: SubsidyVersionRound[] = [
   },
 ];
 
+/** 【STEP C】逆算（自動調整）の初期候補変数（すべて「仮」） */
+export const INITIAL_SOLVER_CANDIDATES: SolverCandidate[] = [
+  { key: 'existingGrowthRate', label: '既存事業の売上成長率(%)', min: 0, max: 15, step: 0.1, affects: 'valueAdded' },
+  { key: 'subsidyMonthlyQty', label: '補助事業の月あたり数量', min: 0, max: 100, step: 1, affects: 'valueAdded' },
+  // existingCostRate は全予測期（currentFY・baseFY含む）共通の単一値のため、ソルバー対象外とする（基準年度が動くのを防ぐ）
+  { key: 'perCapitaWageGrowthRate', label: '一人当たり給与の伸び率(%)', min: 0, max: 10, step: 0.1, affects: 'wage' },
+];
+
+/** 【STEP C】説明文テンプレートの初期値 */
+export const INITIAL_NARRATIVE_TEMPLATES: NarrativeTemplate[] = [
+  {
+    id: 'valueAdded',
+    title: '付加価値額目標値の算出根拠',
+    template:
+      '基準年度（{基準年度}）の付加価値額{基準付加価値額}に対し、既存事業の年{既存成長率}%成長と、補助事業による売上{最終年度補助売上}の上乗せにより、最終年度（{最終年度}）に{最終付加価値額}を見込む。年平均成長率は{付加価値CAGR}%である。',
+  },
+  {
+    id: 'wage',
+    title: '一人当たり給与支給総額目標値の算出根拠',
+    template:
+      '基準年度の一人当たり給与支給総額{基準一人当たり給与}を毎年{給与伸び率}%引き上げ、最終年度に{最終一人当たり給与}とする。年平均成長率は{給与CAGR}%である。',
+  },
+];
+
 /** 初期「仮」の値一覧 */
 export const INITIAL_TENTATIVE_ITEMS: TentativeItem[] = [
   {
@@ -324,7 +360,574 @@ export const INITIAL_TENTATIVE_ITEMS: TentativeItem[] = [
     isConfirmed: false,
     editableInAdmin: true,
   },
+  {
+    id: 'tent-8',
+    category: '算出方式',
+    keyName: 'incomeTaxRatePercent',
+    label: '法人税等の実効税率（シミュレーション用）',
+    currentValue: 30,
+    unit: '%',
+    rationale: 'シミュレーション用の標準的な実効税率を仮定（仮値）',
+    isConfirmed: false,
+    editableInAdmin: true,
+  },
+  {
+    id: 'tent-9',
+    category: '算出方式',
+    keyName: 'kokoboEmployeeRule',
+    label: '公募要領方式の従業員数＝期末人数−当期増員数（期中入社を除外）',
+    currentValue: '仮',
+    unit: '',
+    rationale: '期中増員を除外した概算カウントルール（仮値）',
+    isConfirmed: false,
+    editableInAdmin: true,
+  },
 ];
+
+/**
+ * 【STEP2】共通の標準科目対応表（初期設定）
+ * 決算書の各勘定科目名から公式インポート用フォーマット項目への対応ルール
+ * 管理画面から閲覧・新規追加・編集・削除可能
+ */
+export const INITIAL_STANDARD_ACCOUNT_MAPPINGS: AccountMappingRule[] = [
+  // 1. 売上・原価・人件費・減価償却費・利益
+  {
+    id: 'std-rule-1',
+    sourceAccountName: '売上高',
+    action: 'map',
+    targetFieldKey: 'sales',
+    targetFieldLabel: '売上高',
+    scope: 'standard',
+    note: '全社売上高へ直接マッピング',
+  },
+  {
+    id: 'std-rule-2',
+    sourceAccountName: '製品売上高',
+    action: 'map',
+    targetFieldKey: 'sales',
+    targetFieldLabel: '売上高',
+    scope: 'standard',
+    note: '製造業における主要売上科目',
+  },
+  {
+    id: 'std-rule-3',
+    sourceAccountName: '当期製品製造原価（仕入高等）',
+    action: 'map',
+    targetFieldKey: 'costOfSales',
+    targetFieldLabel: '売上原価',
+    scope: 'standard',
+    note: '売上原価へのマッピング',
+  },
+  {
+    id: 'std-rule-4',
+    sourceAccountName: '仕入高',
+    action: 'map',
+    targetFieldKey: 'costOfSales',
+    targetFieldLabel: '売上原価',
+    scope: 'standard',
+    note: '商業・卸売・小売の仕入高',
+  },
+  {
+    id: 'std-rule-5',
+    sourceAccountName: '役員報酬',
+    action: 'map',
+    targetFieldKey: 'directorRemuneration',
+    targetFieldLabel: '役員報酬',
+    scope: 'standard',
+    note: '役員報酬単独項目へのマッピング',
+  },
+  {
+    id: 'std-rule-6',
+    sourceAccountName: '給料手当',
+    action: 'aggregate',
+    targetFieldKey: 'laborCost',
+    targetFieldLabel: '人件費',
+    scope: 'standard',
+    note: '人件費へ合算計上（公募要領の人件費基準）',
+  },
+  {
+    id: 'std-rule-7',
+    sourceAccountName: '賞与手当',
+    action: 'aggregate',
+    targetFieldKey: 'laborCost',
+    targetFieldLabel: '人件費',
+    scope: 'standard',
+    note: '人件費へ合算計上',
+  },
+  {
+    id: 'std-rule-8',
+    sourceAccountName: '法定福利費',
+    action: 'aggregate',
+    targetFieldKey: 'laborCost',
+    targetFieldLabel: '人件費',
+    scope: 'standard',
+    note: '人件費へ合算計上（健康保険・厚生年金・雇用保険等）',
+  },
+  {
+    id: 'std-rule-9',
+    sourceAccountName: '減価償却実施額',
+    action: 'map',
+    targetFieldKey: 'depreciation',
+    targetFieldLabel: '減価償却費',
+    scope: 'standard',
+    note: '付加価値額算出用減価償却費へマッピング',
+  },
+  {
+    id: 'std-rule-10',
+    sourceAccountName: '減価償却費',
+    action: 'map',
+    targetFieldKey: 'depreciation',
+    targetFieldLabel: '減価償却費',
+    scope: 'standard',
+    note: '付加価値額算出用減価償却費へマッピング',
+  },
+  {
+    id: 'std-rule-11',
+    sourceAccountName: '販売費及び一般管理費',
+    action: 'map',
+    targetFieldKey: 'sga',
+    targetFieldLabel: '販売費及び一般管理費',
+    scope: 'standard',
+    note: '全社販管費合計へのマッピング',
+  },
+  {
+    id: 'std-rule-12',
+    sourceAccountName: '営業利益',
+    action: 'map',
+    targetFieldKey: 'operatingProfit',
+    targetFieldLabel: '営業利益',
+    scope: 'standard',
+    note: '営業利益へのマッピング',
+  },
+  {
+    id: 'std-rule-13',
+    sourceAccountName: '受取利息及び配当金',
+    action: 'map',
+    targetFieldKey: 'nonOperatingIncome',
+    targetFieldLabel: '営業外収益',
+    scope: 'standard',
+    note: '営業外収益項目へマッピング',
+  },
+  {
+    id: 'std-rule-14',
+    sourceAccountName: '支払利息',
+    action: 'map',
+    targetFieldKey: 'nonOperatingExpenses',
+    targetFieldLabel: '営業外費用',
+    scope: 'standard',
+    note: '営業外費用項目へマッピング',
+  },
+  {
+    id: 'std-rule-15',
+    sourceAccountName: '経常利益',
+    action: 'map',
+    targetFieldKey: 'ordinaryProfit',
+    targetFieldLabel: '経常利益',
+    scope: 'standard',
+    note: '経常利益へのマッピング',
+  },
+  {
+    id: 'std-rule-16',
+    sourceAccountName: '固定資産売却益',
+    action: 'map',
+    targetFieldKey: 'extraordinaryIncome',
+    targetFieldLabel: '特別利益',
+    scope: 'standard',
+    note: '特別利益項目へマッピング',
+  },
+  {
+    id: 'std-rule-17',
+    sourceAccountName: '固定資産除却損',
+    action: 'map',
+    targetFieldKey: 'extraordinaryLosses',
+    targetFieldLabel: '特別損失',
+    scope: 'standard',
+    note: '特別損失項目へマッピング',
+  },
+  {
+    id: 'std-rule-18',
+    sourceAccountName: '法人税、住民税及び事業税',
+    action: 'map',
+    targetFieldKey: 'incomeTaxes',
+    targetFieldLabel: '法人税等',
+    scope: 'standard',
+    note: '税引前利益からの控除項目',
+  },
+  {
+    id: 'std-rule-19',
+    sourceAccountName: '当期純利益',
+    action: 'map',
+    targetFieldKey: 'netIncome',
+    targetFieldLabel: '当期純利益',
+    scope: 'standard',
+    note: '当期純利益項目へマッピング',
+  },
+  // 2. 貸借対照表 (BS)
+  {
+    id: 'std-rule-20',
+    sourceAccountName: '現金及び預金',
+    action: 'map',
+    targetFieldKey: 'cashAndDeposits',
+    targetFieldLabel: '現金及び預金',
+    scope: 'standard',
+    note: '流動資産へのマッピング',
+  },
+  {
+    id: 'std-rule-21',
+    sourceAccountName: '受取手形',
+    action: 'map',
+    targetFieldKey: 'notesReceivable',
+    targetFieldLabel: '受取手形',
+    scope: 'standard',
+    note: '流動資産へのマッピング',
+  },
+  {
+    id: 'std-rule-22',
+    sourceAccountName: '売掛金',
+    action: 'map',
+    targetFieldKey: 'accountsReceivable',
+    targetFieldLabel: '売掛金',
+    scope: 'standard',
+    note: '流動資産へのマッピング',
+  },
+  {
+    id: 'std-rule-23',
+    sourceAccountName: '棚卸資産',
+    action: 'map',
+    targetFieldKey: 'inventories',
+    targetFieldLabel: '棚卸資産',
+    scope: 'standard',
+    note: '商品・製品・原材料・仕掛品等の合算対象',
+  },
+  {
+    id: 'std-rule-24',
+    sourceAccountName: '建物及び構築物',
+    action: 'map',
+    targetFieldKey: 'buildings',
+    targetFieldLabel: '建物',
+    scope: 'standard',
+    note: '有形固定資産へのマッピング',
+  },
+  {
+    id: 'std-rule-25',
+    sourceAccountName: '機械及び装置',
+    action: 'map',
+    targetFieldKey: 'machineryAndEquipment',
+    targetFieldLabel: '機械及び装置',
+    scope: 'standard',
+    note: '有形固定資産へのマッピング',
+  },
+  {
+    id: 'std-rule-26',
+    sourceAccountName: 'ソフトウェア',
+    action: 'map',
+    targetFieldKey: 'software',
+    targetFieldLabel: 'ソフトウェア',
+    scope: 'standard',
+    note: '無形固定資産へのマッピング',
+  },
+  {
+    id: 'std-rule-27',
+    sourceAccountName: '資産合計',
+    action: 'map',
+    targetFieldKey: 'totalAssets',
+    targetFieldLabel: '資産合計',
+    scope: 'standard',
+    note: '総資産合計',
+  },
+  {
+    id: 'std-rule-28',
+    sourceAccountName: '支払手形',
+    action: 'map',
+    targetFieldKey: 'notesPayable',
+    targetFieldLabel: '支払手形',
+    scope: 'standard',
+    note: '流動負債へのマッピング',
+  },
+  {
+    id: 'std-rule-29',
+    sourceAccountName: '買掛金',
+    action: 'map',
+    targetFieldKey: 'accountsPayable',
+    targetFieldLabel: '買掛金',
+    scope: 'standard',
+    note: '流動負債へのマッピング',
+  },
+  {
+    id: 'std-rule-30',
+    sourceAccountName: '短期借入金',
+    action: 'map',
+    targetFieldKey: 'shortTermBorrowings',
+    targetFieldLabel: '短期借入金',
+    scope: 'standard',
+    note: '流動負債へのマッピング',
+  },
+  {
+    id: 'std-rule-31',
+    sourceAccountName: '長期借入金',
+    action: 'map',
+    targetFieldKey: 'longTermBorrowings',
+    targetFieldLabel: '長期借入金',
+    scope: 'standard',
+    note: '固定負債へのマッピング',
+  },
+  {
+    id: 'std-rule-32',
+    sourceAccountName: '資本金',
+    action: 'map',
+    targetFieldKey: 'capitalStock',
+    targetFieldLabel: '資本金',
+    scope: 'standard',
+    note: '株主資本へのマッピング',
+  },
+  {
+    id: 'std-rule-33',
+    sourceAccountName: '繰越利益剰余金',
+    action: 'map',
+    targetFieldKey: 'retainedEarnings',
+    targetFieldLabel: '利益剰余金',
+    scope: 'standard',
+    note: '株主資本へのマッピング',
+  },
+  {
+    id: 'std-rule-34',
+    sourceAccountName: '負債・純資産合計',
+    action: 'map',
+    targetFieldKey: 'totalLiabilitiesAndNetAssets',
+    targetFieldLabel: '負債・純資産合計',
+    scope: 'standard',
+    note: '総負債及び純資産合計',
+  },
+  {
+    id: 'std-rule-35',
+    sourceAccountName: '地代家賃',
+    action: 'aggregate',
+    targetFieldKey: 'sga',
+    targetFieldLabel: '販売費及び一般管理費',
+    scope: 'standard',
+    note: '全社販管費へ合算',
+  },
+  {
+    id: 'std-rule-36',
+    sourceAccountName: '旅費交通費',
+    action: 'aggregate',
+    targetFieldKey: 'sga',
+    targetFieldLabel: '販売費及び一般管理費',
+    scope: 'standard',
+    note: '全社販管費へ合算',
+  },
+  {
+    id: 'std-rule-37',
+    sourceAccountName: '交際費',
+    action: 'aggregate',
+    targetFieldKey: 'sga',
+    targetFieldLabel: '販売費及び一般管理費',
+    scope: 'standard',
+    note: '全社販管費へ合算',
+  },
+];
+
+/**
+ * 【STEP2】会社ごとの科目対応表（企業別保持）
+ * 会社IDをキーに保持し、次回取込時に自動適用される
+ */
+export const INITIAL_COMPANY_ACCOUNT_MAPPINGS: Record<string, AccountMappingRule[]> = {
+  'proj-marumaru-001': [
+    {
+      id: 'comp-rule-1',
+      sourceAccountName: '役員退職慰労引当金繰入',
+      action: 'exclude',
+      targetFieldKey: 'excluded',
+      targetFieldLabel: '【除外】計算対象外',
+      scope: 'company',
+      companyId: 'proj-marumaru-001',
+      note: '臨時費用の除外設定（株式会社○○固有）',
+    },
+    {
+      id: 'comp-rule-2',
+      sourceAccountName: '試作品評価外注費',
+      action: 'aggregate',
+      targetFieldKey: 'costOfSales',
+      targetFieldLabel: '売上原価',
+      scope: 'company',
+      companyId: 'proj-marumaru-001',
+      note: '外注加工費として売上原価へ合算',
+    },
+  ],
+};
+
+/**
+ * 計画シミュレーション前提値のデフォルト初期値生成
+ * enabled false、率と金額はすべて0、ForecastNumbers は全キー0、subsidyOperatingMonths は全キー12、
+ * salaryShareOfLaborCostPercent は null、directorRemunerationMode 'ratio'、incomeTaxRatePercent 30、配列は空
+ */
+export function createDefaultSimulation(): PlanSimulation {
+  const zeroForecast = (): ForecastNumbers => ({
+    currentFY: 0,
+    baseFY: 0,
+    p1: 0,
+    p2: 0,
+    p3: 0,
+    p4: 0,
+    p5: 0,
+  });
+
+  return {
+    enabled: false,
+    existingGrowthRate: zeroForecast(),
+    existingCostRate: 0,
+    existingOtherSgaRate: 0,
+    subsidyUnitPriceYen: 0,
+    subsidyMonthlyQty: zeroForecast(),
+    subsidyOperatingMonths: {
+      currentFY: 12,
+      baseFY: 12,
+      p1: 12,
+      p2: 12,
+      p3: 12,
+      p4: 12,
+      p5: 12,
+    },
+    subsidyCostRate: 0,
+    subsidyOtherSgaRate: 0,
+    existingDepreciationYen: zeroForecast(),
+    assets: [],
+    headcountIncrease: zeroForecast(),
+    perCapitaWageGrowthRate: zeroForecast(),
+    salaryShareOfLaborCostPercent: null,
+    directorRemunerationMode: 'ratio',
+    directorRemunerationRatioPercent: 0,
+    directorRemunerationAmountYen: zeroForecast(),
+    nonOperatingIncomeYen: zeroForecast(),
+    nonOperatingExpensesYen: zeroForecast(),
+    incomeTaxRatePercent: 30,
+    workplaceMinWage: zeroForecast(),
+    regionalMinWage: zeroForecast(),
+    pinnedKeys: [],
+    solverTargets: [],
+  };
+}
+
+/**
+ * デモ案件「株式会社○○」用シミュレーション初期前提値
+ * 既存予測期の数値と矛盾しない調整値
+ */
+export function createDemoCompanySimulation(): PlanSimulation {
+  return {
+    enabled: false,
+    existingGrowthRate: {
+      currentFY: 2.1,
+      baseFY: 2.0,
+      p1: 0.8,
+      p2: 0.8,
+      p3: 0.4,
+      p4: 0.4,
+      p5: 0.4,
+    },
+    existingCostRate: 75.0,
+    existingOtherSgaRate: 4.2,
+    subsidyUnitPriceYen: 5250000,
+    subsidyMonthlyQty: {
+      currentFY: 0,
+      baseFY: 3,
+      p1: 7,
+      p2: 9,
+      p3: 10,
+      p4: 11,
+      p5: 11,
+    },
+    subsidyOperatingMonths: {
+      currentFY: 0,
+      baseFY: 12,
+      p1: 12,
+      p2: 12,
+      p3: 12,
+      p4: 12,
+      p5: 12,
+    },
+    subsidyCostRate: 61.9,
+    subsidyOtherSgaRate: 5.0,
+    existingDepreciationYen: {
+      currentFY: 62000000,
+      baseFY: 75000000,
+      p1: 82000000,
+      p2: 82000000,
+      p3: 82000000,
+      p4: 80000000,
+      p5: 78000000,
+    },
+    assets: [],
+    headcountIncrease: {
+      currentFY: 1,
+      baseFY: 1,
+      p1: 2,
+      p2: 2,
+      p3: 1,
+      p4: 1,
+      p5: 1,
+    },
+    perCapitaWageGrowthRate: {
+      currentFY: 1.9,
+      baseFY: 1.9,
+      p1: 3.7,
+      p2: 3.6,
+      p3: 3.4,
+      p4: 3.3,
+      p5: 3.2,
+    },
+    salaryShareOfLaborCostPercent: 68,
+    directorRemunerationMode: 'ratio',
+    directorRemunerationRatioPercent: 11.8,
+    directorRemunerationAmountYen: {
+      currentFY: 0,
+      baseFY: 0,
+      p1: 0,
+      p2: 0,
+      p3: 0,
+      p4: 0,
+      p5: 0,
+    },
+    nonOperatingIncomeYen: {
+      currentFY: 0,
+      baseFY: 0,
+      p1: 0,
+      p2: 0,
+      p3: 0,
+      p4: 0,
+      p5: 0,
+    },
+    nonOperatingExpensesYen: {
+      currentFY: 0,
+      baseFY: 0,
+      p1: 0,
+      p2: 0,
+      p3: 0,
+      p4: 0,
+      p5: 0,
+    },
+    incomeTaxRatePercent: 30,
+    workplaceMinWage: {
+      currentFY: 1180,
+      baseFY: 1210,
+      p1: 1230,
+      p2: 1250,
+      p3: 1260,
+      p4: 1280,
+      p5: 1300,
+    },
+    regionalMinWage: {
+      currentFY: 1113,
+      baseFY: 1150,
+      p1: 1150,
+      p2: 1150,
+      p3: 1150,
+      p4: 1150,
+      p5: 1150,
+    },
+    pinnedKeys: [],
+    solverTargets: [],
+  };
+}
 
 /** 空のBS初期生成ヘルパー */
 export function createEmptyBS(): BalanceSheetData {
@@ -452,7 +1055,8 @@ export function createDemoCompanyFinancialMaster(): ProjectFinancialMaster {
     fiscalMonth,
     appliedTrack.applicationDeadline,
     appliedTrack.adoptionDate,
-    appliedTrack.executionPeriodMonths
+    appliedTrack.executionPeriodMonths,
+    appliedTrack.grantDecisionLeadMonths
   );
 
   const createPeriodData = (
@@ -844,6 +1448,10 @@ export function createDemoCompanyFinancialMaster(): ProjectFinancialMaster {
       },
     },
     periods,
+    periodImports: createInitialPeriodImports(),
+    simulation: createDemoCompanySimulation(),
+    planVersions: [],
+    narratives: { valueAdded: '', wage: '' },
   };
 
   initialFinancial.annualSalesEstimate = calculateAnnualSalesEstimate(
@@ -922,24 +1530,6 @@ const DEMO_COMPAT_SUBSIDIES: Record<SubsidyType, SubsidyDocument> = {
     sections: DEMO_SECTIONS_COMPAT,
     lastSavedAt: '2026-11-10 18:00',
   },
-  新事業進出補助金: {
-    subsidyType: '新事業進出補助金',
-    status: '修正中',
-    sections: DEMO_SECTIONS_COMPAT,
-    lastSavedAt: '2026-11-10 18:00',
-  },
-  小規模事業者持続化補助金: {
-    subsidyType: '小規模事業者持続化補助金',
-    status: '下書き',
-    sections: DEMO_SECTIONS_COMPAT,
-    lastSavedAt: '2026-11-10 18:00',
-  },
-  東京都経営強化基盤事業: {
-    subsidyType: '東京都経営強化基盤事業',
-    status: '下書き',
-    sections: DEMO_SECTIONS_COMPAT,
-    lastSavedAt: '2026-11-10 18:00',
-  },
 };
 
 const DEMO_MASTER_ITEMS: HearingMasterItem[] = [
@@ -973,6 +1563,190 @@ const DEMO_MASTER_ITEMS: HearingMasterItem[] = [
   },
 ];
 
+/** ガント標準テンプレートタスク初期値（STEP D/F・すべて仮） */
+export const INITIAL_SCHEDULE_TEMPLATES: ScheduleTemplateTask[] = [
+  // 申請前 (anchor: 'deadline')
+  {
+    id: 'st-pre-1',
+    title: 'キックオフ・ヒアリング',
+    phase: 'pre',
+    owner: 'support',
+    anchor: 'deadline',
+    offsetDays: -56,
+    durationDays: 14,
+    gateId: 'gate-1',
+  },
+  {
+    id: 'st-pre-2',
+    title: '決算書3期分受領・取込',
+    phase: 'pre',
+    owner: 'client',
+    anchor: 'deadline',
+    offsetDays: -49,
+    durationDays: 7,
+  },
+  {
+    id: 'st-pre-3',
+    title: '収益計画作成・要件シミュレーション',
+    phase: 'pre',
+    owner: 'support',
+    anchor: 'deadline',
+    offsetDays: -42,
+    durationDays: 14,
+    gateId: 'gate-2',
+  },
+  {
+    id: 'st-pre-4',
+    title: '申請書本文作成',
+    phase: 'pre',
+    owner: 'support',
+    anchor: 'deadline',
+    offsetDays: -28,
+    durationDays: 14,
+    gateId: 'gate-3',
+  },
+  {
+    id: 'st-pre-5',
+    title: '顧客確認・修正・添付書類準備',
+    phase: 'pre',
+    owner: 'client',
+    anchor: 'deadline',
+    offsetDays: -14,
+    durationDays: 10,
+  },
+  {
+    id: 'st-pre-6',
+    title: '電子申請',
+    phase: 'pre',
+    owner: 'client',
+    anchor: 'deadline',
+    offsetDays: -4,
+    durationDays: 4,
+    gateId: 'gate-4',
+  },
+  // 採択後
+  {
+    id: 'st-post-1',
+    title: '採択発表',
+    phase: 'post',
+    owner: 'support',
+    anchor: 'adoption',
+    offsetDays: 0,
+    durationDays: 0,
+    milestone: true,
+  },
+  {
+    id: 'st-post-2',
+    title: '交付申請（採択から2か月以内）',
+    phase: 'post',
+    owner: 'support',
+    anchor: 'adoption',
+    offsetDays: 0,
+    durationDays: 60,
+  },
+  {
+    id: 'st-post-3',
+    title: '交付決定',
+    phase: 'post',
+    owner: 'support',
+    anchor: 'grantDecision',
+    offsetDays: 0,
+    durationDays: 0,
+    milestone: true,
+  },
+  {
+    id: 'st-post-4',
+    title: '補助事業実施',
+    phase: 'post',
+    owner: 'client',
+    anchor: 'grantDecision',
+    offsetDays: 0,
+    durationDays: 0,
+    useExecutionPeriod: true,
+  },
+  {
+    id: 'st-post-5',
+    title: '実績報告（完了後30日以内）',
+    phase: 'post',
+    owner: 'support',
+    anchor: 'completion',
+    offsetDays: 0,
+    durationDays: 30,
+  },
+  {
+    id: 'st-post-6',
+    title: '確定検査・補助金受領',
+    phase: 'post',
+    owner: 'client',
+    anchor: 'completion',
+    offsetDays: 30,
+    durationDays: 60,
+  },
+  {
+    id: 'st-post-rep-1',
+    title: '事業化状況報告 第1回',
+    phase: 'post',
+    owner: 'client',
+    anchor: 'completion',
+    offsetDays: 60,
+    durationDays: 0,
+    milestone: true,
+  },
+  {
+    id: 'st-post-rep-2',
+    title: '事業化状況報告 第2回',
+    phase: 'post',
+    owner: 'client',
+    anchor: 'completion',
+    offsetDays: 425,
+    durationDays: 0,
+    milestone: true,
+  },
+  {
+    id: 'st-post-rep-3',
+    title: '事業化状況報告 第3回',
+    phase: 'post',
+    owner: 'client',
+    anchor: 'completion',
+    offsetDays: 790,
+    durationDays: 0,
+    milestone: true,
+  },
+  {
+    id: 'st-post-rep-4',
+    title: '事業化状況報告 第4回',
+    phase: 'post',
+    owner: 'client',
+    anchor: 'completion',
+    offsetDays: 1155,
+    durationDays: 0,
+    milestone: true,
+  },
+  {
+    id: 'st-post-rep-5',
+    title: '事業化状況報告 第5回',
+    phase: 'post',
+    owner: 'client',
+    anchor: 'completion',
+    offsetDays: 1520,
+    durationDays: 0,
+    milestone: true,
+  },
+  {
+    id: 'st-post-rep-6',
+    title: '事業化状況報告 第6回',
+    phase: 'post',
+    owner: 'client',
+    anchor: 'completion',
+    offsetDays: 1885,
+    durationDays: 0,
+    milestone: true,
+  },
+];
+
+const demoFinancialMaster = createDemoCompanyFinancialMaster();
+const demoTrack = INITIAL_TRACKS.find((t) => t.id === 'shinjigyo') || INITIAL_TRACKS[0];
+
 /** 単一デモ企業「株式会社○○」 */
 export const DEMO_PROJECT_MARUMARU: Project = {
   id: 'proj-marumaru-1',
@@ -985,7 +1759,7 @@ export const DEMO_PROJECT_MARUMARU: Project = {
   status: '収支計画作成中',
   appliedVersionId: 'round-ver-1-3',
   appliedTrackId: 'shinjigyo',
-  financialMaster: createDemoCompanyFinancialMaster(),
+  financialMaster: demoFinancialMaster,
   masterItems: DEMO_MASTER_ITEMS,
   hearingVariables: DEFAULT_DEMO_HEARING_VARIABLES,
   subsidies: DEMO_COMPAT_SUBSIDIES,
@@ -1150,6 +1924,14 @@ export const DEMO_PROJECT_MARUMARU: Project = {
       status: 'not_started',
     },
   ],
+  schedule: {
+    items: buildScheduleFromTemplate(
+      INITIAL_SCHEDULE_TEMPLATES,
+      demoFinancialMaster,
+      demoTrack
+    ),
+    viewMode: 'month',
+  },
   manualChecks: {
     'mchk-mismatch-checked': false,
     'mchk-bs-balanced': true,
@@ -1249,6 +2031,7 @@ export function createInitialAppState(): SubsidyAppState {
     displayCurrencyUnit: 'manYen', // 画面表示の初期値は「万円」
     roundingMode: 'floor', // 端数処理の初期値は「切り捨て」
     defaultFiscalMonth: 3,
+    simulationDefaults: createDefaultSimulation(),
   };
 
   return {
@@ -1279,9 +2062,15 @@ export function createInitialAppState(): SubsidyAppState {
         uploadedAt: '2026-10-15',
       },
     ],
+    excelCellMappings: createDefaultExcelCellMappings(),
+    scheduleTemplates: INITIAL_SCHEDULE_TEMPLATES,
     ganttStandardTemplates: INITIAL_GANTT_TEMPLATES,
     aiPromptTemplates: INITIAL_AI_PROMPTS,
     tentativeItems: INITIAL_TENTATIVE_ITEMS,
+    standardAccountMappings: INITIAL_STANDARD_ACCOUNT_MAPPINGS,
+    companyAccountMappings: INITIAL_COMPANY_ACCOUNT_MAPPINGS,
+    solverCandidates: INITIAL_SOLVER_CANDIDATES,
+    narrativeTemplates: INITIAL_NARRATIVE_TEMPLATES,
     projects: [JSON.parse(JSON.stringify(DEMO_PROJECT_MARUMARU)) as Project],
   };
 }
@@ -1292,9 +2081,6 @@ export function createInitialAppState(): SubsidyAppState {
 
 export const SUBSIDY_TYPES = [
   '新事業進出・ものづくり商業サービス補助金',
-  '新事業進出補助金',
-  '小規模事業者持続化補助金',
-  '東京都経営強化基盤事業',
 ] as const;
 
 export const PROJECT_STATUS_LIST = [
@@ -1322,7 +2108,6 @@ export const TEXT_MODULE_CATEGORIES = [
   { id: 'challenge', label: '現状の経営課題・市場背景' },
   { id: 'investment', label: '設備導入内容・工程変革' },
   { id: 'effect', label: '投資効果・収益回収計画' },
-  { id: 'tokyo_base', label: '都内サプライチェーン貢献' },
 ] as const;
 
 export const SAMPLE_MEETING_MINUTES = `【顧客名】株式会社○○

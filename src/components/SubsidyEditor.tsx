@@ -81,26 +81,11 @@ const SUBSIDY_META: Record<
     guideline:
       '推奨文字数: 各項目 500字以上（事業実施体制・革新性・市場ニーズ・数値計画を明確に記述）',
   },
-  新事業進出補助金: {
-    subtitle: '親データ・最大ボリューム（事業再構築・新分野展開向け詳細記述）',
-    guideline:
-      '推奨文字数: 各項目 500字以上（事業環境・設備優位性・3ヶ年収益計画を詳述）',
-  },
-  小規模事業者持続化補助金: {
-    subtitle: '販路開拓・強みに焦点を当てて抽出・要約',
-    guideline:
-      '推奨文字数: 各項目 約200字（自社の強みと展示会・サンプル活用による販路拡大を簡潔記述）',
-  },
-  東京都経営強化基盤事業: {
-    subtitle: '都内基盤強化・設備導入の妥当性と経費根拠を補強',
-    guideline:
-      '推奨文字数: 各項目 約350〜400字（都内サプライチェーン維持・相見積妥当性を明記）',
-  },
 };
 
 function evaluateCharLimitStatus(
   currentLen: number,
-  selectedLength: '200' | '500' | 'custom',
+  selectedLength: '200' | '500' | 'custom' | string | number | undefined,
   customLimit: number
 ): {
   targetChars: number;
@@ -109,7 +94,7 @@ function evaluateCharLimitStatus(
   status: 'shortage' | 'optimal' | 'over';
   label: string;
 } {
-  if (selectedLength === '500') {
+  if (selectedLength === '500' || selectedLength === 500) {
     const target = 500;
     const ratioPct = Math.min(100, Math.round((currentLen / target) * 100));
     if (currentLen < target * 0.8) {
@@ -139,7 +124,7 @@ function evaluateCharLimitStatus(
     };
   }
 
-  const target = selectedLength === '200' ? 200 : customLimit || 400;
+  const target = (selectedLength === '200' || selectedLength === 200) ? 200 : customLimit || 400;
   const rawRatio = target > 0 ? (currentLen / target) * 100 : 100;
   const ratioPct = Math.min(100, Math.round(rawRatio));
 
@@ -189,7 +174,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
   onNotify,
 }) => {
   const [selectedSubsidy, setSelectedSubsidy] =
-    useState<SubsidyType>('新事業進出補助金');
+    useState<SubsidyType>('新事業進出・ものづくり商業サービス補助金');
   const [regeneratingIds, setRegeneratingIds] = useState<
     Record<string, boolean>
   >({});
@@ -298,14 +283,14 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
             <div>
               <span className="block text-slate-400">現在の総投資額案</span>
               <span className="font-mono tabular-nums font-semibold text-slate-800">
-                {project.financialMaster.investment.totalInvestment.toLocaleString()}{' '}
+                {(project.financialMaster.investment.totalInvestment ?? 0).toLocaleString()}{' '}
                 万円
               </span>
             </div>
             <div>
               <span className="block text-slate-400">補助金申請希望額</span>
               <span className="font-mono tabular-nums font-semibold text-slate-800">
-                {project.financialMaster.investment.subsidyRequested.toLocaleString()}{' '}
+                {(project.financialMaster.investment.subsidyRequested ?? 0).toLocaleString()}{' '}
                 万円
               </span>
             </div>
@@ -324,11 +309,10 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
 
   const inferCategoryForSection = (
     idx: number,
-    subsidy: SubsidyType
+    _subsidy: SubsidyType
   ): TextModuleCategory | 'ALL' => {
     if (idx === 0) return 'strength';
     if (idx === 1) return 'investment';
-    if (subsidy === '東京都経営強化基盤事業') return 'tokyo_base';
     return 'effect';
   };
 
@@ -350,9 +334,18 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
 
   const handleInsertSampleHumanEdit = (section: SubsidySection) => {
     if (!canEditDoc) return;
+    const currentTrack =
+      activeCallRound.tracks.find(
+        (t) => t.id === project.financialMaster?.appliedTrackId
+      ) || activeCallRound.tracks[0];
     const templateAppendix =
       'なお、総投資額{設備投資額}（機械装置{機械装置費}・システム{システム費}）に対する投資回収期間は年間キャッシュフロー増加額約{年間CF増加額}ベースで約{回収年数}と試算しており、3年後売上増{売上増加額}（全社{3年後売上}）の達成確度は高い。';
-    const interpolated = interpolateTags(templateAppendix, project);
+    const interpolated = interpolateTags(
+      templateAppendix,
+      project,
+      currentTrack,
+      activeCallRound.requirements
+    );
     if (section.currentText.includes('投資回収期間')) {
       onNotify('既に投資回収年数・内訳の加筆例が反映されています。');
       return;
@@ -417,7 +410,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
             </span>
             {' · '}総投資額:{' '}
             <span className="font-mono tabular-nums font-semibold">
-              {project.financialMaster.investment.totalInvestment.toLocaleString()}
+              {(project.financialMaster.investment.totalInvestment ?? 0).toLocaleString()}
               万円
             </span>
             {' · '}3年後売上目標:{' '}
@@ -455,7 +448,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
       {/* 1. Subsidy Switching Tabs */}
       <div
         data-guide-id="guide-editor-subsidy-tabs"
-        className="grid grid-cols-1 md:grid-cols-3 border border-slate-200 bg-white divide-y md:divide-y-0 md:divide-x divide-slate-200"
+        className="grid grid-cols-1 border border-slate-200 bg-white"
       >
         {SUBSIDY_TYPES.map((st) => {
           const isActive = selectedSubsidy === st;
@@ -585,7 +578,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
           const showMasterRef = Boolean(openMasterPreviewIds[section.id]);
           const showInlineDiff = Boolean(openDiffPreviewIds[section.id]);
 
-          const referencedMasters = project.masterItems.filter((m) =>
+          const referencedMasters = (project.masterItems ?? []).filter((m) =>
             section.sourceMasterIds.includes(m.id)
           );
 
@@ -601,7 +594,7 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
           const sectionCriteria = activeCallRound.reviewCriteria.filter(
             (rc) =>
               rc.subsidyType === selectedSubsidy &&
-              rc.targetSectionIds.includes(section.id)
+              (rc.targetSectionIds ?? []).includes(section.id)
           );
 
           return (
@@ -871,9 +864,16 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
                           <button
                             type="button"
                             onClick={() => {
+                              const currentTrack =
+                                activeCallRound.tracks.find(
+                                  (t) =>
+                                    t.id === project.financialMaster?.appliedTrackId
+                                ) || activeCallRound.tracks[0];
                               const replaced = interpolateTags(
                                 section.currentText,
-                                project
+                                project,
+                                currentTrack,
+                                activeCallRound.requirements
                               );
                               onUpdateSectionText(
                                 project.id,
@@ -988,6 +988,12 @@ export const SubsidyEditor: React.FC<SubsidyEditorProps> = ({
           project={project}
           modules={textModules}
           reviewCriteria={activeCallRound.reviewCriteria}
+          track={
+            activeCallRound.tracks.find(
+              (t) => t.id === project.financialMaster?.appliedTrackId
+            ) || activeCallRound.tracks[0]
+          }
+          requirements={activeCallRound.requirements}
           onInsertText={(interpolatedText, mode) => {
             const nextText =
               mode === 'replace' || !pickerTargetSection.currentText.trim()

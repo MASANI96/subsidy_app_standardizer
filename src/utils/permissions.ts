@@ -44,7 +44,7 @@ export const PERMISSION_MATRIX: PermissionMatrixRow[] = [
     key: 'schedule_task_edit',
     category: '標準工程表（タブ1）',
     featureLabel: '顧客／支援側タスクの進捗状態更新',
-    description: '8週間ガントチャート上の各タスク進捗（未着手・進行中・完了）の更新',
+    description: '全体スケジュール（ガントチャート）上の各タスク進捗（未着手・進行中・完了）の更新',
     roles: {
       営業担当: true,
       書類作成者: true,

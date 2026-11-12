@@ -55,7 +55,7 @@ export const ConsistencyChecker: React.FC<ConsistencyCheckerProps> = ({
   onNotify,
 }) => {
   const [targetSubsidy, setTargetSubsidy] =
-    useState<SubsidyType>('新事業進出補助金');
+    useState<SubsidyType>('新事業進出・ものづくり商業サービス補助金');
   const [isRunningAudit, setIsRunningAudit] = useState(false);
   const [auditStepIndex, setAuditStepIndex] = useState(0);
   const [auditProgress, setAuditProgress] = useState(0);

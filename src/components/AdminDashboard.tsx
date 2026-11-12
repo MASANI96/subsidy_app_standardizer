@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   AlertCircle,
+  BookOpen,
   Calendar,
   Check,
   Copy,
@@ -14,14 +15,21 @@ import {
   Upload,
 } from 'lucide-react';
 import {
+  AccountMappingRule,
   AdminTabId,
   AnnualSalesEstimateMethod,
   DisplayCurrencyUnit,
   EmployeeCountMethod,
+  ExcelCellMapping,
+  ExcelTemplateDefinition,
   InitialProjectDefaults,
+  NarrativeTemplate,
   PlanningYearsOption,
+  Project,
   Role,
   RoundingMode,
+  ScheduleTemplateTask,
+  SolverCandidate,
   SubsidyRequirements,
   SubsidyTrack,
   SubsidyTrackId,
@@ -30,6 +38,10 @@ import {
 } from '../types';
 import { formatMoney, getUnitLabel } from '../utils/financialCalculations';
 import { readJsonFromFile } from '../utils/storageService';
+import { AccountMappingAdmin } from './admin/AccountMappingAdmin';
+import { ExcelTemplateAdmin } from './admin/ExcelTemplateAdmin';
+import { ScheduleTemplateAdmin } from './admin/ScheduleTemplateAdmin';
+import { SolverNarrativeAdmin } from './admin/SolverNarrativeAdmin';
 
 interface AdminDashboardProps {
   role: Role;
@@ -39,6 +51,39 @@ interface AdminDashboardProps {
   tentativeItems: TentativeItem[];
   displayCurrencyUnit: DisplayCurrencyUnit;
   roundingMode: RoundingMode;
+  // STEP D: プロジェクト & 科目対応表
+  projects: Project[];
+  standardAccountMappings: AccountMappingRule[];
+  companyAccountMappings: Record<string, AccountMappingRule[]>;
+  onAddStandardMappingRule: (rule: Omit<AccountMappingRule, 'id'>) => void;
+  onUpdateStandardMappingRule: (id: string, updates: Partial<AccountMappingRule>) => void;
+  onDeleteStandardMappingRule: (id: string) => void;
+  onAddCompanyMappingRule: (companyId: string, rule: Omit<AccountMappingRule, 'id'>) => void;
+  onUpdateCompanyMappingRule: (
+    companyId: string,
+    id: string,
+    updates: Partial<AccountMappingRule>
+  ) => void;
+  onDeleteCompanyMappingRule: (companyId: string, id: string) => void;
+  // STEP D: Excelテンプレート & セル対応
+  excelTemplates: ExcelTemplateDefinition[];
+  excelCellMappings: ExcelCellMapping[];
+  onUpdateExcelTemplate: (id: string, updates: Partial<ExcelTemplateDefinition>) => void;
+  onAddExcelCellMapping: (mapping: Omit<ExcelCellMapping, 'id'>) => void;
+  onUpdateExcelCellMapping: (id: string, updates: Partial<ExcelCellMapping>) => void;
+  onDeleteExcelCellMapping: (id: string) => void;
+  // STEP D: ガント標準テンプレート
+  scheduleTemplates: ScheduleTemplateTask[];
+  onAddScheduleTemplate: (task: Omit<ScheduleTemplateTask, 'id'>) => void;
+  onUpdateScheduleTemplate: (id: string, updates: Partial<ScheduleTemplateTask>) => void;
+  onDeleteScheduleTemplate: (id: string) => void;
+  onMoveScheduleTemplate: (id: string, direction: 'up' | 'down') => void;
+  // STEP D: ソルバー候補 & 説明文テンプレート
+  solverCandidates: SolverCandidate[];
+  narrativeTemplates: NarrativeTemplate[];
+  onUpdateSolverCandidates: (candidates: SolverCandidate[]) => void;
+  onUpdateNarrativeTemplates: (templates: NarrativeTemplate[]) => void;
+  // 既存ハンドラ
   onSetActiveVersion: (roundId: string) => void;
   onDuplicateVersion: (sourceRoundId: string, newVersionCode: string) => void;
   onUpdateCallRound: (roundId: string, updates: Partial<SubsidyVersionRound>) => void;
@@ -67,6 +112,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   tentativeItems,
   displayCurrencyUnit,
   roundingMode,
+  projects,
+  standardAccountMappings,
+  companyAccountMappings,
+  onAddStandardMappingRule,
+  onUpdateStandardMappingRule,
+  onDeleteStandardMappingRule,
+  onAddCompanyMappingRule,
+  onUpdateCompanyMappingRule,
+  onDeleteCompanyMappingRule,
+  excelTemplates,
+  excelCellMappings,
+  onUpdateExcelTemplate,
+  onAddExcelCellMapping,
+  onUpdateExcelCellMapping,
+  onDeleteExcelCellMapping,
+  scheduleTemplates,
+  onAddScheduleTemplate,
+  onUpdateScheduleTemplate,
+  onDeleteScheduleTemplate,
+  onMoveScheduleTemplate,
+  solverCandidates,
+  narrativeTemplates,
+  onUpdateSolverCandidates,
+  onUpdateNarrativeTemplates,
   onSetActiveVersion,
   onDuplicateVersion,
   onUpdateCallRound,
@@ -122,12 +191,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         )}
       </div>
 
-      {/* 4 Tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-300">
+      {/* 8 Tabs */}
+      <div className="flex items-center gap-2 border-b border-slate-300 overflow-x-auto">
         <button
           type="button"
           onClick={() => setActiveTab('callRounds')}
-          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 cursor-pointer transition-colors ${
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 cursor-pointer transition-colors whitespace-nowrap ${
             activeTab === 'callRounds'
               ? 'border-blue-700 text-blue-900 bg-white'
               : 'border-transparent text-slate-600 hover:text-slate-900'
@@ -140,7 +209,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <button
           type="button"
           onClick={() => setActiveTab('initialDefaults')}
-          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 cursor-pointer transition-colors ${
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 cursor-pointer transition-colors whitespace-nowrap ${
             activeTab === 'initialDefaults'
               ? 'border-blue-700 text-blue-900 bg-white'
               : 'border-transparent text-slate-600 hover:text-slate-900'
@@ -153,7 +222,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <button
           type="button"
           onClick={() => setActiveTab('tentativeList')}
-          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 cursor-pointer transition-colors ${
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 cursor-pointer transition-colors whitespace-nowrap ${
             activeTab === 'tentativeList'
               ? 'border-blue-700 text-blue-900 bg-white'
               : 'border-transparent text-slate-600 hover:text-slate-900'
@@ -168,8 +237,60 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         <button
           type="button"
+          onClick={() => setActiveTab('accountMapping')}
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 cursor-pointer transition-colors whitespace-nowrap ${
+            activeTab === 'accountMapping'
+              ? 'border-blue-700 text-blue-900 bg-white'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <BookOpen className="w-3.5 h-3.5" />
+          <span>科目対応表</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('templates')}
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 cursor-pointer transition-colors whitespace-nowrap ${
+            activeTab === 'templates'
+              ? 'border-blue-700 text-blue-900 bg-white'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <FileSpreadsheet className="w-3.5 h-3.5" />
+          <span>Excel出力設定</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('scheduleTemplate')}
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 cursor-pointer transition-colors whitespace-nowrap ${
+            activeTab === 'scheduleTemplate'
+              ? 'border-blue-700 text-blue-900 bg-white'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          <span>ガント標準テンプレート</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('solver')}
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 cursor-pointer transition-colors whitespace-nowrap ${
+            activeTab === 'solver'
+              ? 'border-blue-700 text-blue-900 bg-white'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Sparkles className="w-3.5 h-3.5" />
+          <span>自動調整・説明文テンプレート</span>
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveTab('backup')}
-          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 cursor-pointer transition-colors ${
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 cursor-pointer transition-colors whitespace-nowrap ${
             activeTab === 'backup'
               ? 'border-blue-700 text-blue-900 bg-white'
               : 'border-transparent text-slate-600 hover:text-slate-900'
@@ -667,6 +788,230 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 ))}
               </select>
             </div>
+
+            {/* D-6 計画シミュレーションの初期値 */}
+            <div className="md:col-span-2 pt-5 border-t border-slate-200 space-y-4">
+              <div>
+                <h4 className="text-xs font-bold text-slate-800">
+                  計画シミュレーションの初期値
+                </h4>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  ※ ここで設定した値は、新しく作成する案件にだけ反映されます
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
+                {/* 既存事業 原価率 */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-700 block">
+                    既存事業 原価率初期値 (%):
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    disabled={!canEdit}
+                    defaultValue={initialDefaults.simulationDefaults?.existingCostRate ?? 0}
+                    onBlur={(e) =>
+                      onUpdateInitialDefaults({
+                        simulationDefaults: {
+                          ...initialDefaults.simulationDefaults,
+                          existingCostRate: Number(e.target.value) || 0,
+                        },
+                      })
+                    }
+                    className="w-full bg-slate-50 border border-slate-300 px-3 py-1.5 font-mono text-right"
+                  />
+                </div>
+
+                {/* 既存事業 その他販管費率 */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-700 block">
+                    既存事業 その他販管費率初期値 (%):
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    disabled={!canEdit}
+                    defaultValue={initialDefaults.simulationDefaults?.existingOtherSgaRate ?? 0}
+                    onBlur={(e) =>
+                      onUpdateInitialDefaults({
+                        simulationDefaults: {
+                          ...initialDefaults.simulationDefaults,
+                          existingOtherSgaRate: Number(e.target.value) || 0,
+                        },
+                      })
+                    }
+                    className="w-full bg-slate-50 border border-slate-300 px-3 py-1.5 font-mono text-right"
+                  />
+                </div>
+
+                {/* 補助事業 単価 */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-700 block">
+                    補助事業 単価初期値 (円):
+                  </label>
+                  <input
+                    type="number"
+                    step="1"
+                    disabled={!canEdit}
+                    defaultValue={initialDefaults.simulationDefaults?.subsidyUnitPriceYen ?? 0}
+                    onBlur={(e) =>
+                      onUpdateInitialDefaults({
+                        simulationDefaults: {
+                          ...initialDefaults.simulationDefaults,
+                          subsidyUnitPriceYen: Number(e.target.value) || 0,
+                        },
+                      })
+                    }
+                    className="w-full bg-slate-50 border border-slate-300 px-3 py-1.5 font-mono text-right"
+                  />
+                </div>
+
+                {/* 補助事業 原価率 */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-700 block">
+                    補助事業 原価率初期値 (%):
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    disabled={!canEdit}
+                    defaultValue={initialDefaults.simulationDefaults?.subsidyCostRate ?? 0}
+                    onBlur={(e) =>
+                      onUpdateInitialDefaults({
+                        simulationDefaults: {
+                          ...initialDefaults.simulationDefaults,
+                          subsidyCostRate: Number(e.target.value) || 0,
+                        },
+                      })
+                    }
+                    className="w-full bg-slate-50 border border-slate-300 px-3 py-1.5 font-mono text-right"
+                  />
+                </div>
+
+                {/* 補助事業 その他販管費率 */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-700 block">
+                    補助事業 その他販管費率初期値 (%):
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    disabled={!canEdit}
+                    defaultValue={initialDefaults.simulationDefaults?.subsidyOtherSgaRate ?? 0}
+                    onBlur={(e) =>
+                      onUpdateInitialDefaults({
+                        simulationDefaults: {
+                          ...initialDefaults.simulationDefaults,
+                          subsidyOtherSgaRate: Number(e.target.value) || 0,
+                        },
+                      })
+                    }
+                    className="w-full bg-slate-50 border border-slate-300 px-3 py-1.5 font-mono text-right"
+                  />
+                </div>
+
+                {/* 補助事業 稼働月数初期値 */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-700 block">
+                    補助事業 稼働月数初期値 (月数):
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="12"
+                    disabled={!canEdit}
+                    defaultValue={initialDefaults.simulationDefaults?.subsidyOperatingMonths?.p1 ?? 12}
+                    onBlur={(e) => {
+                      const m = Number(e.target.value) || 12;
+                      onUpdateInitialDefaults({
+                        simulationDefaults: {
+                          ...initialDefaults.simulationDefaults,
+                          subsidyOperatingMonths: {
+                            currentFY: 12,
+                            baseFY: 12,
+                            p1: m,
+                            p2: 12,
+                            p3: 12,
+                            p4: 12,
+                            p5: 12,
+                          },
+                        },
+                      });
+                    }}
+                    className="w-full bg-slate-50 border border-slate-300 px-3 py-1.5 font-mono text-right"
+                  />
+                </div>
+
+                {/* 実効税率 */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-700 block">
+                    法人税等の実効税率初期値 (%):
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    disabled={!canEdit}
+                    defaultValue={initialDefaults.simulationDefaults?.incomeTaxRatePercent ?? 30}
+                    onBlur={(e) =>
+                      onUpdateInitialDefaults({
+                        simulationDefaults: {
+                          ...initialDefaults.simulationDefaults,
+                          incomeTaxRatePercent: Number(e.target.value) || 30,
+                        },
+                      })
+                    }
+                    className="w-full bg-slate-50 border border-slate-300 px-3 py-1.5 font-mono text-right"
+                  />
+                </div>
+
+                {/* 人件費に占める給与の割合 */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-700 block">
+                    人件費に占める給与の割合初期値 (%):
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    placeholder="未設定 (null)"
+                    disabled={!canEdit}
+                    defaultValue={initialDefaults.simulationDefaults?.salaryShareOfLaborCostPercent ?? ''}
+                    onBlur={(e) =>
+                      onUpdateInitialDefaults({
+                        simulationDefaults: {
+                          ...initialDefaults.simulationDefaults,
+                          salaryShareOfLaborCostPercent:
+                            e.target.value === '' ? null : Number(e.target.value) || 0,
+                        },
+                      })
+                    }
+                    className="w-full bg-slate-50 border border-slate-300 px-3 py-1.5 font-mono text-right"
+                  />
+                </div>
+
+                {/* 役員報酬の割合 */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-700 block">
+                    役員報酬の割合初期値 (%):
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    disabled={!canEdit}
+                    defaultValue={initialDefaults.simulationDefaults?.directorRemunerationRatioPercent ?? 0}
+                    onBlur={(e) =>
+                      onUpdateInitialDefaults({
+                        simulationDefaults: {
+                          ...initialDefaults.simulationDefaults,
+                          directorRemunerationRatioPercent: Number(e.target.value) || 0,
+                        },
+                      })
+                    }
+                    className="w-full bg-slate-50 border border-slate-300 px-3 py-1.5 font-mono text-right"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -724,6 +1069,60 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </table>
           </div>
         </div>
+      )}
+
+      {/* TAB 4: 科目対応表 (STEP D-2) */}
+      {activeTab === 'accountMapping' && (
+        <AccountMappingAdmin
+          canEdit={canEdit}
+          projects={projects}
+          standardAccountMappings={standardAccountMappings}
+          companyAccountMappings={companyAccountMappings}
+          onAddStandardMappingRule={onAddStandardMappingRule}
+          onUpdateStandardMappingRule={onUpdateStandardMappingRule}
+          onDeleteStandardMappingRule={onDeleteStandardMappingRule}
+          onAddCompanyMappingRule={onAddCompanyMappingRule}
+          onUpdateCompanyMappingRule={onUpdateCompanyMappingRule}
+          onDeleteCompanyMappingRule={onDeleteCompanyMappingRule}
+        />
+      )}
+
+      {/* TAB 5: Excel出力設定 (STEP D-3) */}
+      {activeTab === 'templates' && (
+        <ExcelTemplateAdmin
+          canEdit={canEdit}
+          excelTemplates={excelTemplates}
+          excelCellMappings={excelCellMappings}
+          onUpdateExcelTemplate={onUpdateExcelTemplate}
+          onAddExcelCellMapping={onAddExcelCellMapping}
+          onUpdateExcelCellMapping={onUpdateExcelCellMapping}
+          onDeleteExcelCellMapping={onDeleteExcelCellMapping}
+          onNotify={onNotify}
+        />
+      )}
+
+      {/* TAB 6: ガント標準テンプレート (STEP D-4) */}
+      {activeTab === 'scheduleTemplate' && (
+        <ScheduleTemplateAdmin
+          canEdit={canEdit}
+          scheduleTemplates={scheduleTemplates}
+          onAddScheduleTemplate={onAddScheduleTemplate}
+          onUpdateScheduleTemplate={onUpdateScheduleTemplate}
+          onDeleteScheduleTemplate={onDeleteScheduleTemplate}
+          onMoveScheduleTemplate={onMoveScheduleTemplate}
+        />
+      )}
+
+      {/* TAB 7: 自動調整・説明文テンプレート (STEP D-5) */}
+      {activeTab === 'solver' && (
+        <SolverNarrativeAdmin
+          canEdit={canEdit}
+          solverCandidates={solverCandidates}
+          narrativeTemplates={narrativeTemplates}
+          onUpdateSolverCandidates={onUpdateSolverCandidates}
+          onUpdateNarrativeTemplates={onUpdateNarrativeTemplates}
+          onNotify={onNotify}
+        />
       )}
 
       {/* TAB 4: 設定のバックアップ（JSON書き出し・読み込み） */}

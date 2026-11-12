@@ -1,3 +1,4 @@
+import { DEMO_PROJECT_MARUMARU } from './initialData';
 import { AdminTabId, ScreenId, WorkspaceTabId } from '../types';
 
 export interface GuideStep {
@@ -43,7 +44,7 @@ export const SPEC_CORRESPONDENCE_ROWS: SpecCorrespondenceRow[] = [
     id: 'spec-2',
     tag: '指示書 2',
     requirement:
-      '新事業進出を親マスターとし、持続化＝引き算・要約、東京都＝要件追加',
+      '新事業進出・ものづくり商業サービス補助金をマスターとし各申請項目へ展開',
     screenLabel: 'マッピング表（階層図）',
     target: { screen: 'mapping', guideId: 'guide-mapping-hierarchy' },
   },
@@ -56,7 +57,7 @@ export const SPEC_CORRESPONDENCE_ROWS: SpecCorrespondenceRow[] = [
     target: {
       screen: 'workspace',
       workspaceTab: 'hearing',
-      projectId: 'proj-tech-precision',
+      projectId: DEMO_PROJECT_MARUMARU.id,
       guideId: 'guide-hearing-variables',
     },
   },
@@ -69,7 +70,7 @@ export const SPEC_CORRESPONDENCE_ROWS: SpecCorrespondenceRow[] = [
     target: {
       screen: 'workspace',
       workspaceTab: 'financial',
-      projectId: 'proj-tech-precision',
+      projectId: DEMO_PROJECT_MARUMARU.id,
       guideId: 'guide-fin-requirements',
     },
   },
@@ -96,7 +97,7 @@ export const SPEC_CORRESPONDENCE_ROWS: SpecCorrespondenceRow[] = [
     target: {
       screen: 'workspace',
       workspaceTab: 'consistency',
-      projectId: 'proj-edogawa-foods',
+      projectId: DEMO_PROJECT_MARUMARU.id,
       guideId: 'guide-consistency-table',
     },
   },
@@ -109,7 +110,7 @@ export const SPEC_CORRESPONDENCE_ROWS: SpecCorrespondenceRow[] = [
     target: {
       screen: 'workspace',
       workspaceTab: 'schedule',
-      projectId: 'proj-tech-precision',
+      projectId: DEMO_PROJECT_MARUMARU.id,
       guideId: 'guide-gantt-chart',
     },
   },
@@ -129,7 +130,7 @@ export const SPEC_CORRESPONDENCE_ROWS: SpecCorrespondenceRow[] = [
     target: {
       screen: 'workspace',
       workspaceTab: 'editor',
-      projectId: 'proj-sankyo-logistics',
+      projectId: DEMO_PROJECT_MARUMARU.id,
       guideId: 'guide-editor-charlimit',
     },
   },
@@ -158,9 +159,9 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
     steps: [
       {
         id: 'step-0-1',
-        title: '本システムの全体像（親マスターから3補助金へ）',
+        title: '本システムの全体像（新事業進出・ものづくり商業サービス補助金）',
         description:
-          '情報量の最も多い「新事業進出補助金」を親マスターとして整備し、持続化補助金へは引き算・要約、東京都の助成事業へは地域・経費妥当性の要件追加を行うことで、1回の取材から3制度の申請書を効率的に作成できます。',
+          '「新事業進出・ものづくり商業サービス補助金」をマスターとして整備し、1回の取材・入力から各申請項目の書類作成を効率的に行います。',
         guideId: 'guide-mapping-hierarchy',
         specTag: '指示書 2',
         target: { screen: 'mapping' },
@@ -219,7 +220,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         id: 'step-1-4',
         title: '新規案件の登録',
         description:
-          '営業担当またはシステム管理者が新規支援案件を登録すると、標準8週間スケジュール、共通ヒアリング項目、収支計画シートの初期枠が自動的にセットアップされます。',
+          '営業担当またはシステム管理者が新規支援案件を登録すると、全体スケジュール、共通ヒアリング項目、収支計画シートの初期枠が自動的にセットアップされます。',
         guideId: 'guide-project-add',
         specTag: '―',
         target: { screen: 'projects' },
@@ -235,13 +236,13 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         id: 'step-2-1',
         title: '顧客タスクと支援側タスク',
         description:
-          '申請までの標準8週間（W1〜W8）の工程を、「顧客担当タスク（決算書・相見積書の準備や意思決定）」と「支援側タスク（分析・執筆・監査）」に明確に色分けして可視化します。',
+          '申請までの全体スケジュールの工程を、「顧客担当タスク（決算書・相見積書の準備や意思決定）」と「支援側タスク（分析・執筆・監査）」に明確に色分けして可視化します。',
         guideId: 'guide-gantt-chart',
         specTag: '指示書 4-⑥',
         target: {
           screen: 'workspace',
           workspaceTab: 'schedule',
-          projectId: 'proj-tech-precision',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -254,7 +255,20 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'schedule',
-          projectId: 'proj-tech-precision',
+          projectId: DEMO_PROJECT_MARUMARU.id,
+        },
+      },
+      {
+        id: 'step-2-3',
+        title: '共有URL発行',
+        description:
+          '顧客や社内関係者へ工程表を共有するための閲覧専用URLを発行・コピーできます。',
+        guideId: 'guide-gantt-share',
+        specTag: '―',
+        target: {
+          screen: 'workspace',
+          workspaceTab: 'schedule',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
     ],
@@ -274,7 +288,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'hearing',
-          projectId: 'proj-tech-precision',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -287,7 +301,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'hearing',
-          projectId: 'proj-tech-precision',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -300,7 +314,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'hearing',
-          projectId: 'proj-tech-precision',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -313,7 +327,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'hearing',
-          projectId: 'proj-tech-precision',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
     ],
@@ -333,7 +347,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'financial',
-          projectId: 'proj-tech-precision',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -346,7 +360,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'financial',
-          projectId: 'proj-tech-precision',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -359,7 +373,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'financial',
-          projectId: 'proj-tech-precision',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -372,7 +386,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'financial',
-          projectId: 'proj-tech-precision',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -385,7 +399,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'financial',
-          projectId: 'proj-tech-precision',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -398,7 +412,72 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'financial',
-          projectId: 'proj-tech-precision',
+          projectId: DEMO_PROJECT_MARUMARU.id,
+        },
+      },
+      {
+        id: 'step-4-7',
+        title: '決算書取込と見比べ画面',
+        description:
+          '過去決算書PDFのOCRテキストとシステム科目を左右で見比べ、確実な科目紐付けと確定ロックを行います。',
+        guideId: 'guide-fin-import',
+        specTag: '―',
+        target: {
+          screen: 'workspace',
+          workspaceTab: 'financial',
+          projectId: DEMO_PROJECT_MARUMARU.id,
+        },
+      },
+      {
+        id: 'step-4-8',
+        title: '計画シミュレーション',
+        description:
+          '売上・原価・人件費・設備投資などの前提値を設定し、将来予測PLをリアルタイムに自動計算します。',
+        guideId: 'guide-fin-simulation',
+        specTag: '―',
+        target: {
+          screen: 'workspace',
+          workspaceTab: 'financial',
+          projectId: DEMO_PROJECT_MARUMARU.id,
+        },
+      },
+      {
+        id: 'step-4-9',
+        title: '前提値の自動調整（ソルバー）',
+        description:
+          '公募要件（付加価値額や賃上げ率など）の達成目標に向け、指定した前提変数を自動で逆算・調整します。',
+        guideId: 'guide-fin-solver',
+        specTag: '―',
+        target: {
+          screen: 'workspace',
+          workspaceTab: 'financial',
+          projectId: DEMO_PROJECT_MARUMARU.id,
+        },
+      },
+      {
+        id: 'step-4-10',
+        title: '収支計画の版管理',
+        description:
+          '検討段階ごとの収支計画をバージョンとして保存し、差分比較や過去版への復元を安全に行えます。',
+        guideId: 'guide-fin-versions',
+        specTag: '―',
+        target: {
+          screen: 'workspace',
+          workspaceTab: 'financial',
+          projectId: DEMO_PROJECT_MARUMARU.id,
+        },
+      },
+      {
+        id: 'step-4-11',
+        title: 'Excel出力',
+        description:
+          '電子申請システム（jGrants）の公式インポート用フォーマットや顧客説明用サマリーをExcel形式で出力します。',
+        guideId: 'guide-fin-export',
+        specTag: '―',
+        target: {
+          screen: 'workspace',
+          workspaceTab: 'financial',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
     ],
@@ -418,7 +497,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'editor',
-          projectId: 'proj-sunrise-seiko',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -431,7 +510,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'editor',
-          projectId: 'proj-sankyo-logistics',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -444,7 +523,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'editor',
-          projectId: 'proj-sankyo-logistics',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -457,7 +536,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'editor',
-          projectId: 'proj-sankyo-logistics',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -470,7 +549,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'editor',
-          projectId: 'proj-sankyo-logistics',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -483,7 +562,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'editor',
-          projectId: 'proj-sankyo-logistics',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -496,7 +575,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'editor',
-          projectId: 'proj-sankyo-logistics',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
     ],
@@ -516,7 +595,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'consistency',
-          projectId: 'proj-edogawa-foods',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -529,7 +608,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'consistency',
-          projectId: 'proj-edogawa-foods',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
       {
@@ -542,7 +621,7 @@ export const GUIDE_CHAPTERS: GuideChapter[] = [
         target: {
           screen: 'workspace',
           workspaceTab: 'consistency',
-          projectId: 'proj-edogawa-foods',
+          projectId: DEMO_PROJECT_MARUMARU.id,
         },
       },
     ],

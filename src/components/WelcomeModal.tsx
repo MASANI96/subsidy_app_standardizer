@@ -57,7 +57,7 @@ export const WelcomeModal: React.FC<WelcomeModalProps> = ({
                 <span>デモツアーを開始（約5分）</span>
               </div>
               <p className="text-xs text-slate-300 leading-relaxed">
-                実案件「株式会社テックプレシジョン」を一気通貫で自動操作しながら、全17ステップで主要機能をご案内します。
+                実案件「株式会社○○」を一気通貫で自動操作しながら、主要機能をご案内します。
               </p>
             </button>
 

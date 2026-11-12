@@ -20,15 +20,8 @@ interface DerivedCellInfo {
   charLimitText: string;
 }
 
-function getHandlingType(subsidyType: SubsidyType): '全文' | '要約' | '補強' {
-  if (
-    subsidyType === '新事業進出・ものづくり商業サービス補助金' ||
-    subsidyType === '新事業進出補助金'
-  ) {
-    return '全文';
-  }
-  if (subsidyType === '小規模事業者持続化補助金') return '要約';
-  return '補強';
+function getHandlingType(_subsidyType: SubsidyType): '全文' | '要約' | '補強' {
+  return '全文';
 }
 
 function getHandlingBadgeStyle(handling: '全文' | '要約' | '補強'): string {
@@ -42,12 +35,12 @@ function getHandlingBadgeStyle(handling: '全文' | '要約' | '補強'): string
 }
 
 function formatCharLimitDisplay(
-  selectedLength: '200' | '500' | 'custom',
+  selectedLength: '200' | '500' | 'custom' | string | number | undefined,
   sectionId: string,
   sectionCharLimits: Record<string, number>
 ): string {
-  if (selectedLength === '500') return '推奨 500字以上';
-  if (selectedLength === '200') return '指定 約200字';
+  if (selectedLength === '500' || selectedLength === 500) return '推奨 500字以上';
+  if (selectedLength === '200' || selectedLength === 200) return '指定 約200字';
   const custom = sectionCharLimits[sectionId] ?? 400;
   return `指定 上限${custom}字`;
 }
@@ -65,9 +58,6 @@ export const MappingTableScreen: React.FC<MappingTableScreenProps> = ({
     return project.masterItems.map((masterItem, idx) => {
       const cells: Record<SubsidyType, DerivedCellInfo[]> = {
         '新事業進出・ものづくり商業サービス補助金': [],
-        新事業進出補助金: [],
-        小規模事業者持続化補助金: [],
-        東京都経営強化基盤事業: [],
       };
 
       SUBSIDY_TYPES.forEach((st) => {
@@ -117,7 +107,7 @@ export const MappingTableScreen: React.FC<MappingTableScreenProps> = ({
           charLimitText: formatCharLimitDisplay(
             targetSec.selectedLength || '500',
             targetSec.id,
-            activeCallRound.sectionCharLimits
+            activeCallRound.sectionCharLimits || {}
           ),
         };
       });
@@ -134,27 +124,19 @@ export const MappingTableScreen: React.FC<MappingTableScreenProps> = ({
         subtitle: `新事業単価 ${project.hearingVariables.newUnitPrice.value.toLocaleString()}円 × 3年目 ${project.hearingVariables.newCustomerCountY3.value.toLocaleString()}件 / 削減 ${project.hearingVariables.reducedWorkHours.value.toLocaleString()}時間`,
         effectCells,
         extraNotes: {
-          新事業進出補助金:
+          '新事業進出・ものづくり商業サービス補助金':
             '売上増加額・付加価値成長・賃上げ計画の根拠として本文＋様式へ全文展開',
-          小規模事業者持続化補助金:
-            '新商品の客単価・獲得見込客数に絞って販路開拓効果を簡潔要約',
-          東京都経営強化基盤事業:
-            'リードタイム短縮・不良率低減・生産能力向上の定量根拠を補強記載',
         } as Record<SubsidyType, string>,
       },
       {
         id: 'quant-financial',
         code: '定量 B',
         title: '収支計画マスターデータ（直近3期実績・将来3ヶ年計画・投資償却）',
-        subtitle: `総投資 ${project.financialMaster.investment.totalInvestment.toLocaleString()}万円 / 3年後売上 ${project.financialMaster.forecast.y3.sales.toLocaleString()}万円`,
+        subtitle: `総投資 ${(project.financialMaster.investment.totalInvestment ?? 0).toLocaleString()}万円 / 3年後売上 ${project.financialMaster.forecast.y3.sales.toLocaleString()}万円`,
         effectCells,
         extraNotes: {
-          新事業進出補助金:
+          '新事業進出・ものづくり商業サービス補助金':
             '基準年度＋3ヶ年の付加価値額・一人当たり給与総額・設備投資明細へ変換',
-          小規模事業者持続化補助金:
-            '機械装置等費・広報費・ウェブサイト関連費等の経費明細表へ抽出変換',
-          東京都経営強化基盤事業:
-            '都内設置の機械装置・システム等導入費（相見積2社突合）および助成額へ変換',
         } as Record<SubsidyType, string>,
       },
     ];
@@ -224,7 +206,7 @@ export const MappingTableScreen: React.FC<MappingTableScreenProps> = ({
               <SpecTagBadge tag="指示書 5" />
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              最も情報量が多く要件が厳格な「新事業進出補助金」を親マスターとして1回整備し、他制度へは「引き算・要約」と「固有要件の追加」で展開します。
+              「新事業進出・ものづくり商業サービス補助金」をマスターとして整備し、各申請項目へ展開します。
             </p>
           </div>
         </div>
@@ -249,102 +231,25 @@ export const MappingTableScreen: React.FC<MappingTableScreenProps> = ({
             <button
               type="button"
               onClick={() =>
-                onJumpToEditorSection('新事業進出補助金', 'shin-1')
+                onJumpToEditorSection('新事業進出・ものづくり商業サービス補助金', 'shin-1')
               }
               className="w-full max-w-xl bg-slate-900 text-white border border-slate-900 p-4 text-left hover:bg-slate-800 transition-colors cursor-pointer"
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="px-2 py-0.5 text-[11px] font-mono font-semibold bg-white text-slate-900">
-                  親マスター（全文展開・各500字以上）
+                  申請マスター（全文展開・各500字以上）
                 </span>
                 <span className="text-xs text-slate-300 inline-flex items-center gap-1">
                   エディタを開く <ExternalLink className="w-3 h-3" />
                 </span>
               </div>
               <div className="text-base font-bold mt-2">
-                新事業進出補助金（最大情報量・全項目網羅）
+                新事業進出・ものづくり商業サービス補助金（最大情報量・全項目網羅）
               </div>
               <p className="text-xs text-slate-300 mt-1 leading-relaxed">
                 企業概要・市場課題・新規事業の詳細・設備投資と内製化・付加価値額および賃上げ3ヶ年計画をフルボリュームで構築
               </p>
             </button>
-
-            {/* Branch Connectors */}
-            <div className="w-full max-w-2xl hidden md:grid grid-cols-2">
-              <div className="flex flex-col items-center">
-                <div className="w-full h-4 border-t border-r border-slate-400 translate-x-1/2" />
-              </div>
-              <div className="flex flex-col items-center">
-                <div className="w-full h-4 border-t border-l border-slate-400 -translate-x-1/2" />
-              </div>
-            </div>
-            <div className="w-full max-w-2xl hidden md:grid grid-cols-2 -mt-px">
-              <div className="flex flex-col items-center">
-                <div className="h-4 w-px bg-slate-400" />
-                <ArrowDown className="w-4 h-4 text-slate-500 -mt-1" />
-              </div>
-              <div className="flex flex-col items-center">
-                <div className="h-4 w-px bg-slate-400" />
-                <ArrowDown className="w-4 h-4 text-slate-500 -mt-1" />
-              </div>
-            </div>
-
-            {/* Mobile Arrow */}
-            <div className="md:hidden py-2 flex items-center gap-1 text-xs text-slate-500">
-              <ArrowDown className="w-4 h-4" />
-              <span>派生展開</span>
-            </div>
-
-            {/* Child Subsidy Boxes */}
-            <div className="w-full max-w-4xl grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* Child 1: 持続化（引き算・要約） */}
-              <button
-                type="button"
-                onClick={() =>
-                  onJumpToEditorSection('小規模事業者持続化補助金', 'jizo-1')
-                }
-                className="bg-white border-2 border-slate-300 hover:border-slate-900 p-4 text-left transition-colors cursor-pointer"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="px-2 py-0.5 text-[11px] font-semibold bg-sky-50 text-sky-900 border border-sky-300">
-                    【引き算・要約】約200字へ凝縮
-                  </span>
-                  <span className="text-xs text-slate-500 inline-flex items-center gap-1">
-                    開く <ArrowRight className="w-3 h-3" />
-                  </span>
-                </div>
-                <div className="text-sm font-bold text-slate-900 mt-2">
-                  小規模事業者持続化補助金
-                </div>
-                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
-                  親マスターから大規模設備要素を引き算し、「自社の強み」と「展示会・Web・サンプル活用による販路開拓」に焦点を絞って要約。
-                </p>
-              </button>
-
-              {/* Child 2: 東京都（要件追加） */}
-              <button
-                type="button"
-                onClick={() =>
-                  onJumpToEditorSection('東京都経営強化基盤事業', 'tokyo-1')
-                }
-                className="bg-white border-2 border-slate-300 hover:border-slate-900 p-4 text-left transition-colors cursor-pointer"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="px-2 py-0.5 text-[11px] font-semibold bg-amber-50 text-amber-950 border border-amber-300">
-                    【要件追加】都内基盤・経費妥当性を補強
-                  </span>
-                  <span className="text-xs text-slate-500 inline-flex items-center gap-1">
-                    開く <ArrowRight className="w-3 h-3" />
-                  </span>
-                </div>
-                <div className="text-sm font-bold text-slate-900 mt-2">
-                  東京都経営強化基盤事業
-                </div>
-                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
-                  親マスターの設備計画をベースに、「都内事業所での生産基盤強化・雇用維持」および「2社以上相見積による経費妥当性」を追加補強。
-                </p>
-              </button>
-            </div>
           </div>
         </div>
       </section>
@@ -358,7 +263,7 @@ export const MappingTableScreen: React.FC<MappingTableScreenProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-base font-bold text-slate-900">
-                02. 共通マスター項目 × 3補助金 セクション対照マッピング表
+                02. 共通マスター項目 × 申請書セクション対照マッピング表
               </h2>
               <SpecTagBadge tag="指示書 4-④ / Step5" />
             </div>
@@ -382,11 +287,7 @@ export const MappingTableScreen: React.FC<MappingTableScreenProps> = ({
                   >
                     <div className="text-slate-900 font-bold">{st}</div>
                     <div className="text-[11px] font-normal text-slate-500 mt-0.5">
-                      {st === '新事業進出補助金'
-                        ? '親マスター（全文）'
-                        : st === '小規模事業者持続化補助金'
-                          ? '子展開（引き算・要約）'
-                          : '子展開（都内要件追加・補強）'}
+                      マスター（全文）
                     </div>
                   </th>
                 ))}

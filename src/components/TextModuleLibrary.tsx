@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { TEXT_MODULE_CATEGORIES } from '../data/initialData';
+import { INITIAL_CALL_ROUNDS, TEXT_MODULE_CATEGORIES } from '../data/initialData';
 import {
   Project,
   ReviewCriterion,
@@ -82,6 +82,13 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
   const [criterionFilter, setCriterionFilter] = useState<string>('ALL');
 
   const canEditLib = canEdit(role, 'library_edit');
+
+  const defaultRound = INITIAL_CALL_ROUNDS[0];
+  const defaultTrack =
+    defaultRound.tracks.find(
+      (t) => t.id === selectedProject?.financialMaster?.appliedTrackId
+    ) || defaultRound.tracks[0];
+  const defaultReq = defaultRound.requirements;
 
   // Add / Edit Modal State
   const [modalOpen, setModalOpen] = useState(false);
@@ -212,7 +219,7 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
             </span>
             {' · '}総投資額{' '}
             <span className="font-mono tabular-nums font-semibold">
-              {selectedProject.financialMaster.investment.totalInvestment.toLocaleString()}
+              {(selectedProject.financialMaster.investment.totalInvestment ?? 0).toLocaleString()}
               万円
             </span>{' '}
             / 3年後売上{' '}
@@ -363,7 +370,9 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
           filteredModules.map((mod) => {
             const livePreview = interpolateTags(
               mod.templateText,
-              selectedProject
+              selectedProject,
+              defaultTrack,
+              defaultReq
             );
             const linkedCriteria = (mod.relatedCriteriaIds ?? [])
               .map((cid) => criteriaMap[cid])
@@ -612,7 +621,12 @@ export const TextModuleLibrary: React.FC<TextModuleLibraryProps> = ({
                   リアルタイム置換プレビュー（{selectedProject.companyName}）:
                 </div>
                 <p className="text-slate-900 leading-relaxed">
-                  {interpolateTags(templateText, selectedProject)}
+                  {interpolateTags(
+                    templateText,
+                    selectedProject,
+                    defaultTrack,
+                    defaultReq
+                  )}
                 </p>
               </div>
 

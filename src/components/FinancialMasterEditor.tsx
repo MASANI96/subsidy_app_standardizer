@@ -6,22 +6,37 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  FileSearch,
+  FileSpreadsheet,
+  History,
   Info,
   Lock,
   PieChart,
   Scale,
   Settings,
+  Sparkles,
   Unlock,
 } from 'lucide-react';
 import {
+  AccountMappingAction,
+  AccountMappingRule,
   AnnualSalesEstimateMethod,
   DisplayCurrencyUnit,
   EmployeeCountMethod,
+  ExcelCellMapping,
+  ExcelTemplateDefinition,
+  FORECAST_PERIOD_KEYS,
+  ForecastPeriodKey,
+  HistoricalPeriodKey,
+  NarrativeTemplate,
+  OffBalanceManualInputs,
   PeriodKey,
+  PlanSimulation,
   PlanningYearsOption,
   Project,
   Role,
   RoundingMode,
+  SolverCandidate,
   SubsidyRequirements,
   SubsidyTrack,
   SubsidyTrackId,
@@ -33,6 +48,12 @@ import {
   getUnitLabel,
   parseToYen,
 } from '../utils/financialCalculations';
+import { applySimulation } from '../utils/planSimulation';
+import { FinancialStatementImportView } from './FinancialStatementImportView';
+import { NarrativePanel } from './financial/NarrativePanel';
+import { SimulationPanel } from './financial/SimulationPanel';
+import { VersionPanel } from './financial/VersionPanel';
+import { ExportModal } from './financial/ExportModal';
 
 interface FinancialMasterEditorProps {
   project: Project;
@@ -40,6 +61,44 @@ interface FinancialMasterEditorProps {
   activeCallRound: SubsidyVersionRound;
   displayCurrencyUnit: DisplayCurrencyUnit;
   roundingMode: RoundingMode;
+  standardAccountMappings: AccountMappingRule[];
+  companyAccountMappings: AccountMappingRule[];
+  onUploadPdf: (
+    projectId: string,
+    periodKey: HistoricalPeriodKey,
+    fileData: ArrayBuffer | Uint8Array,
+    fileName: string
+  ) => Promise<any>;
+  onUpdateItemAmount: (
+    projectId: string,
+    periodKey: HistoricalPeriodKey,
+    itemId: string,
+    newAmountYen: number,
+    editorRole: string,
+    reason?: string
+  ) => void;
+  onAssignMapping: (
+    projectId: string,
+    periodKey: HistoricalPeriodKey,
+    itemId: string,
+    action: AccountMappingAction,
+    targetFieldKey: string,
+    targetFieldLabel: string
+  ) => void;
+  onUpdateOffBalance: (
+    projectId: string,
+    periodKey: HistoricalPeriodKey,
+    inputs: Partial<OffBalanceManualInputs>
+  ) => void;
+  onLockPeriod: (
+    projectId: string,
+    periodKey: HistoricalPeriodKey,
+    role: Role
+  ) => void;
+  onUnlockPeriod: (
+    projectId: string,
+    periodKey: HistoricalPeriodKey
+  ) => void;
   onUpdateTrack: (projectId: string, trackId: SubsidyTrackId) => void;
   onUpdatePlanningYears: (projectId: string, years: PlanningYearsOption) => void;
   onUpdateEmployeeCountMethod: (projectId: string, method: EmployeeCountMethod) => void;
@@ -73,13 +132,35 @@ interface FinancialMasterEditorProps {
     value: number
   ) => void;
   onUpdateInvestment: (projectId: string, updates: any) => void;
+  onUpdateSimulation: (projectId: string, updates: Partial<PlanSimulation>) => void;
+  onToggleSimulation: (projectId: string, enabled: boolean) => void;
   onToggleWageSpecial: (projectId: string, isApplied: boolean) => void;
   onLockPlan: (projectId: string) => void;
   onUnlockPlan: (projectId: string) => void;
   onNotify: (msg: string) => void;
+  // STEP C 追加
+  solverCandidates?: SolverCandidate[];
+  narrativeTemplates?: NarrativeTemplate[];
+  onTogglePin?: (projectId: string, key: string) => void;
+  onUpdateSolverTargets?: (
+    projectId: string,
+    targets: { key: string; min: number; max: number; step: number }[]
+  ) => void;
+  onApplySolverResult?: (projectId: string, simulation: PlanSimulation) => void;
+  onSavePlanVersion?: (projectId: string, name: string, memo: string) => void;
+  onRestorePlanVersion?: (projectId: string, versionId: string) => void;
+  onDeletePlanVersion?: (projectId: string, versionId: string) => void;
+  onUpdateNarrative?: (
+    projectId: string,
+    id: 'valueAdded' | 'wage',
+    text: string
+  ) => void;
+  // STEP E 追加
+  excelTemplates?: ExcelTemplateDefinition[];
+  excelCellMappings?: ExcelCellMapping[];
 }
 
-type MainTab = 'summary' | 'pl' | 'bs' | 'investment';
+type MainTab = 'summary' | 'pl' | 'simulation' | 'bs' | 'investment' | 'import';
 
 export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
   project,
@@ -87,6 +168,14 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
   activeCallRound,
   displayCurrencyUnit,
   roundingMode,
+  standardAccountMappings,
+  companyAccountMappings,
+  onUploadPdf,
+  onUpdateItemAmount,
+  onAssignMapping,
+  onUpdateOffBalance,
+  onLockPeriod,
+  onUnlockPeriod,
   onUpdateTrack,
   onUpdatePlanningYears,
   onUpdateEmployeeCountMethod,
@@ -97,12 +186,27 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
   onUpdateBSItem,
   onUpdatePLItem,
   onUpdateInvestment,
+  onUpdateSimulation,
+  onToggleSimulation,
   onToggleWageSpecial,
   onLockPlan,
   onUnlockPlan,
   onNotify,
+  solverCandidates,
+  narrativeTemplates,
+  onTogglePin,
+  onUpdateSolverTargets,
+  onApplySolverResult,
+  onSavePlanVersion,
+  onRestorePlanVersion,
+  onDeletePlanVersion,
+  onUpdateNarrative,
+  excelTemplates = [],
+  excelCellMappings = [],
 }) => {
   const [activeTab, setActiveTab] = useState<MainTab>('summary');
+  const [isVersionPanelOpen, setIsVersionPanelOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [plSegmentView, setPlSegmentView] = useState<'total' | 'split'>('split');
   const [showOverrideModal, setShowOverrideModal] = useState(false);
   const [tempCurrentFY, setTempCurrentFY] = useState(
@@ -158,6 +262,27 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
     }
     return list;
   }, [fm.planningYears]);
+
+  // 計画シミュレーション表示用の予測期キー一覧
+  const visibleForecastKeys = useMemo<ForecastPeriodKey[]>(() => {
+    return visiblePeriods
+      .map((p) => p.key)
+      .filter((k): k is ForecastPeriodKey => FORECAST_PERIOD_KEYS.includes(k as any));
+  }, [visiblePeriods]);
+
+  // 期のラベルマップ
+  const periodLabelsMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const p of visiblePeriods) {
+      map[p.key] = p.label;
+    }
+    return map;
+  }, [visiblePeriods]);
+
+  // シミュレーション前提値のエラー一覧
+  const simulationErrors = useMemo(() => {
+    return applySimulation(fm).errors;
+  }, [fm]);
 
   const toggleSection = (sec: string) => {
     setExpandedSections((prev) => ({ ...prev, [sec]: !prev[sec] }));
@@ -253,8 +378,40 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
             </label>
           </div>
 
-          {/* Action buttons: Lock / Unlock */}
+          {/* Action buttons: Lock / Unlock & STEP2 Import & STEP C Version & STEP E Excel */}
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-guide-id="guide-fin-export"
+              onClick={() => setIsExportModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 transition-colors cursor-pointer shadow-xs"
+              title="公式インポート用フォーマット／顧客説明用サマリーのExcel出力"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Excel出力</span>
+            </button>
+
+            <button
+              type="button"
+              data-guide-id="guide-fin-versions"
+              onClick={() => setIsVersionPanelOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 transition-colors cursor-pointer shadow-xs"
+              title="収支計画の版（バージョン）保存・差分比較・復元"
+            >
+              <History className="w-3.5 h-3.5 text-slate-600" />
+              <span>版管理（{fm.planVersions?.length || 0}）</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('import')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-900 bg-blue-50 hover:bg-blue-100 border border-blue-300 transition-colors cursor-pointer"
+              title="決算書PDF取込・見比べ・科目対応付け画面を開く"
+            >
+              <FileSearch className="w-3.5 h-3.5 text-blue-600" />
+              <span>決算書PDF取込・見比べ（STEP2）</span>
+            </button>
+
             {isLocked ? (
               <button
                 type="button"
@@ -463,6 +620,25 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
 
         <button
           type="button"
+          data-guide-id="guide-fin-simulation"
+          onClick={() => setActiveTab('simulation')}
+          className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+            activeTab === 'simulation'
+              ? 'border-blue-600 text-blue-800 bg-white'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+          <span>計画シミュレーション（前提値）</span>
+          {fm.simulation?.enabled && (
+            <span className="ml-1 px-1.5 py-0.2 bg-blue-100 text-blue-800 text-[10px] rounded-full font-bold">
+              連動中
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveTab('bs')}
           className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
             activeTab === 'bs'
@@ -485,6 +661,28 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
         >
           <Settings className="w-3.5 h-3.5" />
           <span>設備投資計画・資金調達内訳</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('import')}
+          className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+            activeTab === 'import'
+              ? 'border-blue-600 text-blue-800 bg-white'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <FileSearch className="w-3.5 h-3.5 text-blue-600" />
+          <span>決算書PDF取込・見比べ（STEP2）</span>
+          {Boolean(
+            project.financialMaster.periodImports?.y0?.extractedItems?.some(
+              (i) => i.status === 'unmapped'
+            )
+          ) && (
+            <span className="text-[10px] px-1.5 py-0.2 bg-amber-200 text-amber-900 font-bold">
+              未対応あり
+            </span>
+          )}
         </button>
       </div>
 
@@ -731,12 +929,64 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
               </table>
             </div>
           </div>
+
+          {/* 【STEP C】説明文の下書きパネル */}
+          {onUpdateNarrative && (
+            <NarrativePanel
+              fm={fm}
+              track={appliedTrack}
+              requirements={activeCallRound.requirements}
+              narrativeTemplates={narrativeTemplates || []}
+              displayCurrencyUnit={displayCurrencyUnit}
+              roundingMode={roundingMode}
+              disabled={isLocked || !canEdit}
+              onUpdateNarrative={(id, text) => onUpdateNarrative(project.id, id, text)}
+              onNotify={onNotify}
+            />
+          )}
         </div>
       )}
 
       {/* TAB 2: 損益計算書 (PL) */}
       {activeTab === 'pl' && (
         <div className="bg-white border border-slate-200 p-4 space-y-4">
+          {/* 自動計算モード中バナー */}
+          {fm.simulation?.enabled && (
+            <div className="p-3 bg-amber-50 border border-amber-300 text-amber-900 text-xs font-semibold flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Info className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  自動計算モード中：予測期は『計画シミュレーション』タブの前提値から計算されています
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('simulation')}
+                className="text-[11px] text-blue-700 underline font-bold hover:text-blue-900 cursor-pointer"
+              >
+                前提値を編集する
+              </button>
+            </div>
+          )}
+
+          {/* STEP2連携バナー */}
+          <div className="bg-blue-50/70 border border-blue-200 p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2">
+              <FileSearch className="w-4 h-4 text-blue-700 shrink-0" />
+              <span className="text-blue-950 font-medium">
+                【STEP2連携】過去3期（2期前, 1期前, 直近）の実績値は、決算書PDFの読取・科目マッピング・見比べ画面で確定ロックした数値が正確に連動します。
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveTab('import')}
+              className="inline-flex items-center gap-1 px-3 py-1 bg-blue-700 text-white font-semibold hover:bg-blue-800 transition-colors cursor-pointer shrink-0 self-start sm:self-auto"
+            >
+              <span>決算書PDF取込・見比べ画面</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="flex items-center gap-3">
               <span className="text-xs font-bold text-slate-800">損益計算書 表示切替:</span>
@@ -808,49 +1058,71 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
                   <>
                     <tr className="text-slate-600 text-[11px]">
                       <td className="py-1.5 px-5 pl-6">└ 既存事業 売上高</td>
-                      {visiblePeriods.map((p) => (
-                        <td key={p.key} className="py-1.5 px-3 text-right font-mono">
-                          <input
-                            type="text"
-                            disabled={isLocked || !canEdit}
-                            defaultValue={formatMoney(
-                              fm.periods[p.key]?.pl.existingBusiness.sales,
-                              displayCurrencyUnit,
-                              roundingMode,
-                              false
-                            )}
-                            onBlur={(e) =>
-                              handleCellChange(e.target.value, (yen) =>
-                                onUpdatePLItem(project.id, p.key, 'existingBusiness', 'sales', yen)
-                              )
-                            }
-                            className="w-full text-right bg-white border border-slate-200 px-1 py-0.5 focus:border-blue-600"
-                          />
-                        </td>
-                      ))}
+                      {visiblePeriods.map((p) => {
+                        const isForecast = FORECAST_PERIOD_KEYS.includes(p.key as any);
+                        const isCellReadOnly = isLocked || !canEdit || (fm.simulation?.enabled && isForecast);
+                        return (
+                          <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                            <input
+                              key={`${p.key}-existing-sales-${fm.periods[p.key]?.pl.existingBusiness.sales}`}
+                              type="text"
+                              readOnly={isCellReadOnly}
+                              disabled={isLocked || !canEdit}
+                              defaultValue={formatMoney(
+                                fm.periods[p.key]?.pl.existingBusiness.sales,
+                                displayCurrencyUnit,
+                                roundingMode,
+                                false
+                              )}
+                              onBlur={(e) => {
+                                if (isCellReadOnly) return;
+                                handleCellChange(e.target.value, (yen) =>
+                                  onUpdatePLItem(project.id, p.key, 'existingBusiness', 'sales', yen)
+                                );
+                              }}
+                              className={`w-full text-right px-1 py-0.5 ${
+                                isCellReadOnly
+                                  ? 'bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed'
+                                  : 'bg-white border border-slate-200 focus:border-blue-600'
+                              }`}
+                            />
+                          </td>
+                        );
+                      })}
                     </tr>
                     <tr className="text-blue-700 bg-blue-50/40 text-[11px] font-semibold">
                       <td className="py-1.5 px-5 pl-6">└ 補助事業 売上高（新製品・新事業）</td>
-                      {visiblePeriods.map((p) => (
-                        <td key={p.key} className="py-1.5 px-3 text-right font-mono">
-                          <input
-                            type="text"
-                            disabled={isLocked || !canEdit}
-                            defaultValue={formatMoney(
-                              fm.periods[p.key]?.pl.subsidyBusiness.sales,
-                              displayCurrencyUnit,
-                              roundingMode,
-                              false
-                            )}
-                            onBlur={(e) =>
-                              handleCellChange(e.target.value, (yen) =>
-                                onUpdatePLItem(project.id, p.key, 'subsidyBusiness', 'sales', yen)
-                              )
-                            }
-                            className="w-full text-right bg-white border border-blue-200 px-1 py-0.5 focus:border-blue-600 text-blue-900"
-                          />
-                        </td>
-                      ))}
+                      {visiblePeriods.map((p) => {
+                        const isForecast = FORECAST_PERIOD_KEYS.includes(p.key as any);
+                        const isCellReadOnly = isLocked || !canEdit || (fm.simulation?.enabled && isForecast);
+                        return (
+                          <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                            <input
+                              key={`${p.key}-subsidy-sales-${fm.periods[p.key]?.pl.subsidyBusiness.sales}`}
+                              type="text"
+                              readOnly={isCellReadOnly}
+                              disabled={isLocked || !canEdit}
+                              defaultValue={formatMoney(
+                                fm.periods[p.key]?.pl.subsidyBusiness.sales,
+                                displayCurrencyUnit,
+                                roundingMode,
+                                false
+                              )}
+                              onBlur={(e) => {
+                                if (isCellReadOnly) return;
+                                handleCellChange(e.target.value, (yen) =>
+                                  onUpdatePLItem(project.id, p.key, 'subsidyBusiness', 'sales', yen)
+                                );
+                              }}
+                              className={`w-full text-right px-1 py-0.5 ${
+                                isCellReadOnly
+                                  ? 'bg-slate-100 text-slate-500 border border-blue-200 cursor-not-allowed'
+                                  : 'bg-white border border-blue-200 focus:border-blue-600 text-blue-900'
+                              }`}
+                            />
+                          </td>
+                        );
+                      })}
                     </tr>
                   </>
                 )}
@@ -868,49 +1140,71 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
                   <>
                     <tr className="text-slate-600 text-[11px]">
                       <td className="py-1.5 px-5 pl-6">└ 既存事業 売上原価</td>
-                      {visiblePeriods.map((p) => (
-                        <td key={p.key} className="py-1.5 px-3 text-right font-mono">
-                          <input
-                            type="text"
-                            disabled={isLocked || !canEdit}
-                            defaultValue={formatMoney(
-                              fm.periods[p.key]?.pl.existingBusiness.costOfSales,
-                              displayCurrencyUnit,
-                              roundingMode,
-                              false
-                            )}
-                            onBlur={(e) =>
-                              handleCellChange(e.target.value, (yen) =>
-                                onUpdatePLItem(project.id, p.key, 'existingBusiness', 'costOfSales', yen)
-                              )
-                            }
-                            className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
-                          />
-                        </td>
-                      ))}
+                      {visiblePeriods.map((p) => {
+                        const isForecast = FORECAST_PERIOD_KEYS.includes(p.key as any);
+                        const isCellReadOnly = isLocked || !canEdit || (fm.simulation?.enabled && isForecast);
+                        return (
+                          <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                            <input
+                              key={`${p.key}-existing-cos-${fm.periods[p.key]?.pl.existingBusiness.costOfSales}`}
+                              type="text"
+                              readOnly={isCellReadOnly}
+                              disabled={isLocked || !canEdit}
+                              defaultValue={formatMoney(
+                                fm.periods[p.key]?.pl.existingBusiness.costOfSales,
+                                displayCurrencyUnit,
+                                roundingMode,
+                                false
+                              )}
+                              onBlur={(e) => {
+                                if (isCellReadOnly) return;
+                                handleCellChange(e.target.value, (yen) =>
+                                  onUpdatePLItem(project.id, p.key, 'existingBusiness', 'costOfSales', yen)
+                                );
+                              }}
+                              className={`w-full text-right px-1 py-0.5 ${
+                                isCellReadOnly
+                                  ? 'bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed'
+                                  : 'bg-white border border-slate-200'
+                              }`}
+                            />
+                          </td>
+                        );
+                      })}
                     </tr>
                     <tr className="text-slate-600 text-[11px]">
                       <td className="py-1.5 px-5 pl-6">└ 補助事業 売上原価</td>
-                      {visiblePeriods.map((p) => (
-                        <td key={p.key} className="py-1.5 px-3 text-right font-mono">
-                          <input
-                            type="text"
-                            disabled={isLocked || !canEdit}
-                            defaultValue={formatMoney(
-                              fm.periods[p.key]?.pl.subsidyBusiness.costOfSales,
-                              displayCurrencyUnit,
-                              roundingMode,
-                              false
-                            )}
-                            onBlur={(e) =>
-                              handleCellChange(e.target.value, (yen) =>
-                                onUpdatePLItem(project.id, p.key, 'subsidyBusiness', 'costOfSales', yen)
-                              )
-                            }
-                            className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
-                          />
-                        </td>
-                      ))}
+                      {visiblePeriods.map((p) => {
+                        const isForecast = FORECAST_PERIOD_KEYS.includes(p.key as any);
+                        const isCellReadOnly = isLocked || !canEdit || (fm.simulation?.enabled && isForecast);
+                        return (
+                          <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                            <input
+                              key={`${p.key}-subsidy-cos-${fm.periods[p.key]?.pl.subsidyBusiness.costOfSales}`}
+                              type="text"
+                              readOnly={isCellReadOnly}
+                              disabled={isLocked || !canEdit}
+                              defaultValue={formatMoney(
+                                fm.periods[p.key]?.pl.subsidyBusiness.costOfSales,
+                                displayCurrencyUnit,
+                                roundingMode,
+                                false
+                              )}
+                              onBlur={(e) => {
+                                if (isCellReadOnly) return;
+                                handleCellChange(e.target.value, (yen) =>
+                                  onUpdatePLItem(project.id, p.key, 'subsidyBusiness', 'costOfSales', yen)
+                                );
+                              }}
+                              className={`w-full text-right px-1 py-0.5 ${
+                                isCellReadOnly
+                                  ? 'bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed'
+                                  : 'bg-white border border-slate-200'
+                              }`}
+                            />
+                          </td>
+                        );
+                      })}
                     </tr>
                   </>
                 )}
@@ -948,49 +1242,71 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
                 {/* 6. 人件費・減価償却費・付加価値額 */}
                 <tr className="text-slate-700">
                   <td className="py-1.5 px-3 font-semibold">人件費（労務費・役員報酬等含）</td>
-                  {visiblePeriods.map((p) => (
-                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
-                      <input
-                        type="text"
-                        disabled={isLocked || !canEdit}
-                        defaultValue={formatMoney(
-                          fm.periods[p.key]?.pl.laborCost,
-                          displayCurrencyUnit,
-                          roundingMode,
-                          false
-                        )}
-                        onBlur={(e) =>
-                          handleCellChange(e.target.value, (yen) =>
-                            onUpdatePLItem(project.id, p.key, 'root', 'laborCost', yen)
-                          )
-                        }
-                        className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
-                      />
-                    </td>
-                  ))}
+                  {visiblePeriods.map((p) => {
+                    const isForecast = FORECAST_PERIOD_KEYS.includes(p.key as any);
+                    const isCellReadOnly = isLocked || !canEdit || (fm.simulation?.enabled && isForecast);
+                    return (
+                      <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                        <input
+                          key={`${p.key}-labor-${fm.periods[p.key]?.pl.laborCost}`}
+                          type="text"
+                          readOnly={isCellReadOnly}
+                          disabled={isLocked || !canEdit}
+                          defaultValue={formatMoney(
+                            fm.periods[p.key]?.pl.laborCost,
+                            displayCurrencyUnit,
+                            roundingMode,
+                            false
+                          )}
+                          onBlur={(e) => {
+                            if (isCellReadOnly) return;
+                            handleCellChange(e.target.value, (yen) =>
+                              onUpdatePLItem(project.id, p.key, 'root', 'laborCost', yen)
+                            );
+                          }}
+                          className={`w-full text-right px-1 py-0.5 ${
+                            isCellReadOnly
+                              ? 'bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed'
+                              : 'bg-white border border-slate-200'
+                          }`}
+                        />
+                      </td>
+                    );
+                  })}
                 </tr>
                 <tr className="text-slate-700">
                   <td className="py-1.5 px-3 font-semibold">減価償却費</td>
-                  {visiblePeriods.map((p) => (
-                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
-                      <input
-                        type="text"
-                        disabled={isLocked || !canEdit}
-                        defaultValue={formatMoney(
-                          fm.periods[p.key]?.pl.depreciation,
-                          displayCurrencyUnit,
-                          roundingMode,
-                          false
-                        )}
-                        onBlur={(e) =>
-                          handleCellChange(e.target.value, (yen) =>
-                            onUpdatePLItem(project.id, p.key, 'root', 'depreciation', yen)
-                          )
-                        }
-                        className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
-                      />
-                    </td>
-                  ))}
+                  {visiblePeriods.map((p) => {
+                    const isForecast = FORECAST_PERIOD_KEYS.includes(p.key as any);
+                    const isCellReadOnly = isLocked || !canEdit || (fm.simulation?.enabled && isForecast);
+                    return (
+                      <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                        <input
+                          key={`${p.key}-deprec-${fm.periods[p.key]?.pl.depreciation}`}
+                          type="text"
+                          readOnly={isCellReadOnly}
+                          disabled={isLocked || !canEdit}
+                          defaultValue={formatMoney(
+                            fm.periods[p.key]?.pl.depreciation,
+                            displayCurrencyUnit,
+                            roundingMode,
+                            false
+                          )}
+                          onBlur={(e) => {
+                            if (isCellReadOnly) return;
+                            handleCellChange(e.target.value, (yen) =>
+                              onUpdatePLItem(project.id, p.key, 'root', 'depreciation', yen)
+                            );
+                          }}
+                          className={`w-full text-right px-1 py-0.5 ${
+                            isCellReadOnly
+                              ? 'bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed'
+                              : 'bg-white border border-slate-200'
+                          }`}
+                        />
+                      </td>
+                    );
+                  })}
                 </tr>
 
                 {/* 付加価値額 */}
@@ -1010,50 +1326,72 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
                   <td className="py-1.5 px-3 font-semibold">
                     従業員数（{fm.employeeCountMethod === 'periodEnd' ? '期末人数' : '公募要領'}）
                   </td>
-                  {visiblePeriods.map((p) => (
-                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
-                      <input
-                        type="number"
-                        disabled={isLocked || !canEdit}
-                        defaultValue={fm.periods[p.key]?.pl.numberOfEmployees}
-                        onBlur={(e) =>
-                          onUpdatePLItem(
-                            project.id,
-                            p.key,
-                            'root',
-                            'numberOfEmployees',
-                            Number(e.target.value) || 0
-                          )
-                        }
-                        className="w-16 text-right bg-white border border-slate-200 px-1 py-0.5"
-                      />
-                      <span className="ml-1 text-[10px] text-slate-500">名</span>
-                    </td>
-                  ))}
+                  {visiblePeriods.map((p) => {
+                    const isForecast = FORECAST_PERIOD_KEYS.includes(p.key as any);
+                    const isCellReadOnly = isLocked || !canEdit || (fm.simulation?.enabled && isForecast);
+                    return (
+                      <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                        <input
+                          key={`${p.key}-emp-${fm.periods[p.key]?.pl.numberOfEmployees}`}
+                          type="number"
+                          readOnly={isCellReadOnly}
+                          disabled={isLocked || !canEdit}
+                          defaultValue={fm.periods[p.key]?.pl.numberOfEmployees}
+                          onBlur={(e) => {
+                            if (isCellReadOnly) return;
+                            onUpdatePLItem(
+                              project.id,
+                              p.key,
+                              'root',
+                              'numberOfEmployees',
+                              Number(e.target.value) || 0
+                            );
+                          }}
+                          className={`w-16 text-right px-1 py-0.5 ${
+                            isCellReadOnly
+                              ? 'bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed'
+                              : 'bg-white border border-slate-200'
+                          }`}
+                        />
+                        <span className="ml-1 text-[10px] text-slate-500">名</span>
+                      </td>
+                    );
+                  })}
                 </tr>
 
                 <tr className="text-slate-700">
                   <td className="py-1.5 px-3 font-semibold">給与支給総額</td>
-                  {visiblePeriods.map((p) => (
-                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
-                      <input
-                        type="text"
-                        disabled={isLocked || !canEdit}
-                        defaultValue={formatMoney(
-                          fm.periods[p.key]?.pl.totalWages,
-                          displayCurrencyUnit,
-                          roundingMode,
-                          false
-                        )}
-                        onBlur={(e) =>
-                          handleCellChange(e.target.value, (yen) =>
-                            onUpdatePLItem(project.id, p.key, 'root', 'totalWages', yen)
-                          )
-                        }
-                        className="w-full text-right bg-white border border-slate-200 px-1 py-0.5"
-                      />
-                    </td>
-                  ))}
+                  {visiblePeriods.map((p) => {
+                    const isForecast = FORECAST_PERIOD_KEYS.includes(p.key as any);
+                    const isCellReadOnly = isLocked || !canEdit || (fm.simulation?.enabled && isForecast);
+                    return (
+                      <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                        <input
+                          key={`${p.key}-wages-${fm.periods[p.key]?.pl.totalWages}`}
+                          type="text"
+                          readOnly={isCellReadOnly}
+                          disabled={isLocked || !canEdit}
+                          defaultValue={formatMoney(
+                            fm.periods[p.key]?.pl.totalWages,
+                            displayCurrencyUnit,
+                            roundingMode,
+                            false
+                          )}
+                          onBlur={(e) => {
+                            if (isCellReadOnly) return;
+                            handleCellChange(e.target.value, (yen) =>
+                              onUpdatePLItem(project.id, p.key, 'root', 'totalWages', yen)
+                            );
+                          }}
+                          className={`w-full text-right px-1 py-0.5 ${
+                            isCellReadOnly
+                              ? 'bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed'
+                              : 'bg-white border border-slate-200'
+                          }`}
+                        />
+                      </td>
+                    );
+                  })}
                 </tr>
 
                 <tr className="text-slate-800 font-semibold bg-slate-100/50">
@@ -1067,55 +1405,99 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
 
                 <tr className="text-slate-700">
                   <td className="py-1.5 px-3">事業場内 最低賃金</td>
-                  {visiblePeriods.map((p) => (
-                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
-                      <input
-                        type="number"
-                        disabled={isLocked || !canEdit}
-                        defaultValue={fm.periods[p.key]?.pl.workplaceMinWage}
-                        onBlur={(e) =>
-                          onUpdatePLItem(
-                            project.id,
-                            p.key,
-                            'root',
-                            'workplaceMinWage',
-                            Number(e.target.value) || 0
-                          )
-                        }
-                        className="w-20 text-right bg-white border border-slate-200 px-1 py-0.5"
-                      />
-                      <span className="ml-0.5 text-[10px] text-slate-500">円</span>
-                    </td>
-                  ))}
+                  {visiblePeriods.map((p) => {
+                    const isForecast = FORECAST_PERIOD_KEYS.includes(p.key as any);
+                    const isCellReadOnly = isLocked || !canEdit || (fm.simulation?.enabled && isForecast);
+                    return (
+                      <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                        <input
+                          key={`${p.key}-wpmin-${fm.periods[p.key]?.pl.workplaceMinWage}`}
+                          type="number"
+                          readOnly={isCellReadOnly}
+                          disabled={isLocked || !canEdit}
+                          defaultValue={fm.periods[p.key]?.pl.workplaceMinWage}
+                          onBlur={(e) => {
+                            if (isCellReadOnly) return;
+                            onUpdatePLItem(
+                              project.id,
+                              p.key,
+                              'root',
+                              'workplaceMinWage',
+                              Number(e.target.value) || 0
+                            );
+                          }}
+                          className={`w-20 text-right px-1 py-0.5 ${
+                            isCellReadOnly
+                              ? 'bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed'
+                              : 'bg-white border border-slate-200'
+                          }`}
+                        />
+                        <span className="ml-0.5 text-[10px] text-slate-500">円</span>
+                      </td>
+                    );
+                  })}
                 </tr>
 
                 <tr className="text-slate-700">
                   <td className="py-1.5 px-3">地域別 最低賃金（手入力）</td>
-                  {visiblePeriods.map((p) => (
-                    <td key={p.key} className="py-1.5 px-3 text-right font-mono">
-                      <input
-                        type="number"
-                        disabled={isLocked || !canEdit}
-                        defaultValue={fm.periods[p.key]?.pl.regionalMinWage}
-                        onBlur={(e) =>
-                          onUpdatePLItem(
-                            project.id,
-                            p.key,
-                            'root',
-                            'regionalMinWage',
-                            Number(e.target.value) || 0
-                          )
-                        }
-                        className="w-20 text-right bg-white border border-slate-200 px-1 py-0.5"
-                      />
-                      <span className="ml-0.5 text-[10px] text-slate-500">円</span>
-                    </td>
-                  ))}
+                  {visiblePeriods.map((p) => {
+                    const isForecast = FORECAST_PERIOD_KEYS.includes(p.key as any);
+                    const isCellReadOnly = isLocked || !canEdit || (fm.simulation?.enabled && isForecast);
+                    return (
+                      <td key={p.key} className="py-1.5 px-3 text-right font-mono">
+                        <input
+                          key={`${p.key}-regmin-${fm.periods[p.key]?.pl.regionalMinWage}`}
+                          type="number"
+                          readOnly={isCellReadOnly}
+                          disabled={isLocked || !canEdit}
+                          defaultValue={fm.periods[p.key]?.pl.regionalMinWage}
+                          onBlur={(e) => {
+                            if (isCellReadOnly) return;
+                            onUpdatePLItem(
+                              project.id,
+                              p.key,
+                              'root',
+                              'regionalMinWage',
+                              Number(e.target.value) || 0
+                            );
+                          }}
+                          className={`w-20 text-right px-1 py-0.5 ${
+                            isCellReadOnly
+                              ? 'bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed'
+                              : 'bg-white border border-slate-200'
+                          }`}
+                        />
+                        <span className="ml-0.5 text-[10px] text-slate-500">円</span>
+                      </td>
+                    );
+                  })}
                 </tr>
               </tbody>
             </table>
           </div>
         </div>
+      )}
+
+      {/* TAB: 計画シミュレーション（前提値） */}
+      {activeTab === 'simulation' && (
+        <SimulationPanel
+          fm={fm}
+          visibleForecastKeys={visibleForecastKeys}
+          periodLabels={periodLabelsMap}
+          displayCurrencyUnit={displayCurrencyUnit}
+          roundingMode={roundingMode}
+          disabled={isLocked || !canEdit}
+          errors={simulationErrors}
+          solverCandidates={solverCandidates}
+          track={appliedTrack}
+          requirements={activeCallRound.requirements}
+          onUpdate={(updates) => onUpdateSimulation(project.id, updates)}
+          onToggleEnabled={(enabled) => onToggleSimulation(project.id, enabled)}
+          onTogglePin={(key) => onTogglePin?.(project.id, key)}
+          onUpdateSolverTargets={(targets) => onUpdateSolverTargets?.(project.id, targets)}
+          onApplySolverResult={(simResult) => onApplySolverResult?.(project.id, simResult)}
+          onNotify={onNotify}
+        />
       )}
 
       {/* TAB 3: 貸借対照表 (BS) */}
@@ -1571,6 +1953,26 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
         </div>
       )}
 
+      {/* TAB 5: 決算書PDF取込・見比べ（STEP2） */}
+      {activeTab === 'import' && (
+        <FinancialStatementImportView
+          project={project}
+          role={role}
+          displayCurrencyUnit={displayCurrencyUnit}
+          roundingMode={roundingMode}
+          standardAccountMappings={standardAccountMappings}
+          companyAccountMappings={companyAccountMappings}
+          onUploadPdf={onUploadPdf}
+          onUpdateItemAmount={onUpdateItemAmount}
+          onAssignMapping={onAssignMapping}
+          onUpdateOffBalance={onUpdateOffBalance}
+          onLockPeriod={onLockPeriod}
+          onUnlockPeriod={onUnlockPeriod}
+          onNotify={onNotify}
+          onNavigateToFinancialSheet={() => setActiveTab('pl')}
+        />
+      )}
+
       {/* 手動上書きモーダル */}
       {showOverrideModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
@@ -1631,6 +2033,35 @@ export const FinancialMasterEditor: React.FC<FinancialMasterEditorProps> = ({
           </div>
         </div>
       )}
+
+      {/* 【STEP C】収支計画 版管理（バージョン）ドロワー */}
+      {onSavePlanVersion && onRestorePlanVersion && onDeletePlanVersion && (
+        <VersionPanel
+          isOpen={isVersionPanelOpen}
+          onClose={() => setIsVersionPanelOpen(false)}
+          fm={fm}
+          track={appliedTrack}
+          requirements={activeCallRound.requirements}
+          disabled={isLocked || !canEdit}
+          onSaveVersion={(name, memo) => onSavePlanVersion(project.id, name, memo)}
+          onRestoreVersion={(vId) => onRestorePlanVersion(project.id, vId)}
+          onDeleteVersion={(vId) => onDeletePlanVersion(project.id, vId)}
+          onNotify={onNotify}
+        />
+      )}
+
+      {/* 【STEP E】Excel出力モーダル */}
+      <ExportModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        project={project}
+        excelTemplates={excelTemplates}
+        excelCellMappings={excelCellMappings}
+        activeCallRound={activeCallRound}
+        displayCurrencyUnit={displayCurrencyUnit}
+        roundingMode={roundingMode}
+        onNotify={onNotify}
+      />
     </div>
   );
 };

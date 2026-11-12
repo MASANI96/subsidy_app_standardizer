@@ -62,7 +62,7 @@ export const TourCompletionModal: React.FC<TourCompletionModalProps> = ({
               デモツアーが完了しました
             </h2>
             <p className="text-xs text-slate-600 mt-1 leading-relaxed">
-              「株式会社テックプレシジョン」を題材に、初回取材から3補助金への展開・数値ロック・整合性監査・継続的なプロンプト改善までの標準化プロセスをご確認いただきました。
+              「株式会社○○」を題材に、初回取材から申請書への展開・数値ロック・整合性監査までの標準化プロセスをご確認いただきました。
             </p>
           </div>
 

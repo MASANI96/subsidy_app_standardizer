@@ -32,8 +32,9 @@ interface HeaderProps {
 const NAV_ITEMS: { id: ScreenId; label: string }[] = [
   { id: 'projects', label: '01. 案件一覧・台帳' },
   { id: 'workspace', label: '02. 案件ワークスペース' },
-  { id: 'prompts', label: '03. 生成AIプロンプト' },
-  { id: 'admin', label: '04. 管理者設定' },
+  { id: 'mapping', label: '03. マッピング表' },
+  { id: 'prompts', label: '04. 生成AIプロンプト' },
+  { id: 'admin', label: '05. 管理者設定' },
 ];
 
 const ROLES: Role[] = ['営業担当', '書類作成者', 'システム管理者'];

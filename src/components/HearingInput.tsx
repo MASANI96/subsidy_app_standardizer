@@ -217,10 +217,10 @@ export const HearingInput: React.FC<HearingInputProps> = ({
     onUpdateRawText(
       project.id,
       SAMPLE_MEETING_MINUTES,
-      'デモ用プリセット: 株式会社テックプレシジョン 初回議事録'
+      'デモ用プリセット: 株式会社○○ 初回議事録'
     );
     onNotify(
-      '株式会社テックプレシジョンのデモ用サンプル議事録を挿入しました。'
+      '株式会社○○のデモ用サンプル議事録を挿入しました。'
     );
   };
 
@@ -238,7 +238,7 @@ export const HearingInput: React.FC<HearingInputProps> = ({
       onUpdateRawText(
         project.id,
         SAMPLE_MEETING_MINUTES,
-        'デモ用プリセット自動補完: 株式会社テックプレシジョン'
+        'デモ用プリセット自動補完: 株式会社○○'
       );
     }
 

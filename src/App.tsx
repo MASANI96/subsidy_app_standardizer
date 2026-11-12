@@ -64,11 +64,16 @@ export default function App() {
     updateBSItem,
     updatePLItem,
     updateInvestment,
+    updateSimulation,
+    setSimulationEnabled,
     toggleWageSpecial,
     lockFinancialPlan,
     unlockFinancialPlan,
     updateTaskStatus,
     setGatePassed,
+    updateSchedule,
+    rebuildSchedule,
+    markScheduleShared,
     saveSectionText,
     duplicateCallRound,
     updateCallRound,
@@ -78,6 +83,37 @@ export default function App() {
     updateInitialDefaults,
     updateTentativeItem,
     addTentativeItem,
+    uploadPeriodStatementPdf,
+    updateExtractedItemAmount,
+    assignAccountMapping,
+    updatePeriodOffBalanceInputs,
+    lockPeriodImport,
+    unlockPeriodImport,
+    // STEP C アクション
+    togglePin,
+    updateSolverTargets,
+    applySolverResult,
+    savePlanVersion,
+    restorePlanVersion,
+    deletePlanVersion,
+    updateNarrative,
+    updateSolverCandidates,
+    updateNarrativeTemplates,
+    // STEP D アクション
+    addStandardMappingRule,
+    updateStandardMappingRule,
+    deleteStandardMappingRule,
+    addCompanyMappingRule,
+    updateCompanyMappingRule,
+    deleteCompanyMappingRule,
+    updateExcelTemplate,
+    addExcelCellMapping,
+    updateExcelCellMapping,
+    deleteExcelCellMapping,
+    addScheduleTemplate,
+    updateScheduleTemplate,
+    deleteScheduleTemplate,
+    moveScheduleTemplate,
     exportBackup,
     importBackup,
     resetAllData,
@@ -224,6 +260,10 @@ export default function App() {
                       onNavigateTab={handleChangeWorkspaceTab}
                       onNavigateBackToList={() => handleChangeScreen('projects')}
                       onNotify={showNotice}
+                      scheduleTemplates={state.scheduleTemplates}
+                      onUpdateSchedule={updateSchedule}
+                      onRebuildSchedule={rebuildSchedule}
+                      onMarkScheduleShared={markScheduleShared}
                     />
                   )}
 
@@ -253,6 +293,14 @@ export default function App() {
                       activeCallRound={activeCallRound}
                       displayCurrencyUnit={state.displayCurrencyUnit}
                       roundingMode={state.roundingMode}
+                      standardAccountMappings={state.standardAccountMappings}
+                      companyAccountMappings={state.companyAccountMappings[selectedProject.id] ?? []}
+                      onUploadPdf={uploadPeriodStatementPdf}
+                      onUpdateItemAmount={updateExtractedItemAmount}
+                      onAssignMapping={assignAccountMapping}
+                      onUpdateOffBalance={updatePeriodOffBalanceInputs}
+                      onLockPeriod={lockPeriodImport}
+                      onUnlockPeriod={unlockPeriodImport}
                       onUpdateTrack={updateProjectTrack}
                       onUpdatePlanningYears={updatePlanningYears}
                       onUpdateEmployeeCountMethod={updateEmployeeCountMethod}
@@ -263,10 +311,23 @@ export default function App() {
                       onUpdateBSItem={updateBSItem}
                       onUpdatePLItem={updatePLItem}
                       onUpdateInvestment={updateInvestment}
+                      onUpdateSimulation={updateSimulation}
+                      onToggleSimulation={setSimulationEnabled}
                       onToggleWageSpecial={toggleWageSpecial}
                       onLockPlan={lockFinancialPlan}
                       onUnlockPlan={unlockFinancialPlan}
                       onNotify={showNotice}
+                      solverCandidates={state.solverCandidates}
+                      narrativeTemplates={state.narrativeTemplates}
+                      onTogglePin={togglePin}
+                      onUpdateSolverTargets={updateSolverTargets}
+                      onApplySolverResult={applySolverResult}
+                      onSavePlanVersion={savePlanVersion}
+                      onRestorePlanVersion={restorePlanVersion}
+                      onDeletePlanVersion={deletePlanVersion}
+                      onUpdateNarrative={updateNarrative}
+                      excelTemplates={state.excelTemplates}
+                      excelCellMappings={state.excelCellMappings}
                     />
                   )}
 
@@ -281,25 +342,48 @@ export default function App() {
                           対象枠: <strong>{activeCallRound.tracks.find(t => t.id === selectedProject.appliedTrackId)?.name}</strong>
                         </span>
                       </div>
-                      <div className="space-y-4">
-                        {selectedProject.sections.map((sec) => (
-                          <div key={sec.id} className="border border-slate-200 p-4 space-y-2">
-                            <div className="flex items-center justify-between">
-                              <span className="font-bold text-sm text-slate-800">{sec.title}</span>
-                              <span className="text-xs text-slate-400 font-mono">
-                                {sec.currentText.length}文字 / 上限目安{sec.charLimit}文字
-                              </span>
-                            </div>
-                            <textarea
-                              rows={4}
-                              value={sec.currentText}
-                              disabled={selectedProject.financialMaster.status === 'locked' && state.role === '営業担当'}
-                              onChange={(e) => saveSectionText(selectedProject.id, sec.id, e.target.value)}
-                              className="w-full bg-slate-50 border border-slate-300 p-2.5 text-xs text-slate-800 focus:bg-white focus:outline-none focus:border-slate-800"
-                            />
+                      {selectedProject.financialMaster.status !== 'locked' ? (
+                        <div
+                          data-guide-id="guide-editor-blocker"
+                          className="p-8 border border-amber-300 bg-amber-50 text-center space-y-3 my-4"
+                        >
+                          <div className="text-base font-bold text-amber-950">
+                            収支計画が未確定のため、申請書は編集できません（Gate 2）
                           </div>
-                        ))}
-                      </div>
+                          <p className="text-xs text-amber-800">
+                            収支計画タブで数値を確定・ロックすると編集できるようになります。
+                          </p>
+                          <div className="pt-2">
+                            <button
+                              type="button"
+                              onClick={() => handleChangeWorkspaceTab('financial')}
+                              className="inline-flex items-center gap-1.5 px-4 py-2 bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 transition-colors cursor-pointer"
+                            >
+                              収支計画を開く
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {selectedProject.sections.map((sec) => (
+                            <div key={sec.id} className="border border-slate-200 p-4 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="font-bold text-sm text-slate-800">{sec.title}</span>
+                                <span className="text-xs text-slate-400 font-mono">
+                                  {sec.currentText.length}文字 / 上限目安{sec.charLimit}文字
+                                </span>
+                              </div>
+                              <textarea
+                                rows={4}
+                                value={sec.currentText}
+                                disabled={selectedProject.financialMaster.status === 'locked' && state.role === '営業担当'}
+                                onChange={(e) => saveSectionText(selectedProject.id, sec.id, e.target.value)}
+                                className="w-full bg-slate-50 border border-slate-300 p-2.5 text-xs text-slate-800 focus:bg-white focus:outline-none focus:border-slate-800"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -321,9 +405,26 @@ export default function App() {
                 </>
               )}
 
+              {/* Screen: マッピング表 */}
+              {state.activeScreen === 'mapping' &&
+                (selectedProject ? (
+                  <MappingTableScreen
+                    project={selectedProject}
+                    role={state.role}
+                    activeCallRound={activeCallRound}
+                    onJumpToEditorSection={() => handleChangeWorkspaceTab('editor')}
+                    onJumpToFinancial={() => handleChangeWorkspaceTab('financial')}
+                    onJumpToHearing={() => handleChangeWorkspaceTab('hearing')}
+                  />
+                ) : (
+                  <div className="bg-white border border-slate-200 p-6 text-sm text-slate-600">
+                    案件が選択されていません。「01. 案件一覧・台帳」から案件を選んでください。
+                  </div>
+                ))}
+
               {/* Screen 03: 生成AIプロンプト集 */}
               {state.activeScreen === 'prompts' && (
-                <div className="bg-white border border-slate-200 p-6 space-y-4">
+                <div className="bg-white border border-slate-200 p-6 space-y-4" data-guide-id="guide-prompts-generation">
                   <h3 className="text-base font-bold text-slate-900 border-b border-slate-200 pb-2">
                     03. 生成AIプロンプト集（説明文の下書き生成用）
                   </h3>
@@ -351,6 +452,32 @@ export default function App() {
                   tentativeItems={state.tentativeItems}
                   displayCurrencyUnit={state.displayCurrencyUnit}
                   roundingMode={state.roundingMode}
+                  // STEP D props
+                  projects={state.projects}
+                  standardAccountMappings={state.standardAccountMappings}
+                  companyAccountMappings={state.companyAccountMappings}
+                  onAddStandardMappingRule={addStandardMappingRule}
+                  onUpdateStandardMappingRule={updateStandardMappingRule}
+                  onDeleteStandardMappingRule={deleteStandardMappingRule}
+                  onAddCompanyMappingRule={addCompanyMappingRule}
+                  onUpdateCompanyMappingRule={updateCompanyMappingRule}
+                  onDeleteCompanyMappingRule={deleteCompanyMappingRule}
+                  excelTemplates={state.excelTemplates}
+                  excelCellMappings={state.excelCellMappings}
+                  onUpdateExcelTemplate={updateExcelTemplate}
+                  onAddExcelCellMapping={addExcelCellMapping}
+                  onUpdateExcelCellMapping={updateExcelCellMapping}
+                  onDeleteExcelCellMapping={deleteExcelCellMapping}
+                  scheduleTemplates={state.scheduleTemplates}
+                  onAddScheduleTemplate={addScheduleTemplate}
+                  onUpdateScheduleTemplate={updateScheduleTemplate}
+                  onDeleteScheduleTemplate={deleteScheduleTemplate}
+                  onMoveScheduleTemplate={moveScheduleTemplate}
+                  solverCandidates={state.solverCandidates}
+                  narrativeTemplates={state.narrativeTemplates}
+                  onUpdateSolverCandidates={updateSolverCandidates}
+                  onUpdateNarrativeTemplates={updateNarrativeTemplates}
+                  // 既存ハンドラ
                   onSetActiveVersion={setActiveVersionId}
                   onDuplicateVersion={duplicateCallRound}
                   onUpdateCallRound={updateCallRound}

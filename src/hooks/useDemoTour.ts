@@ -3,26 +3,51 @@ import { driver, Driver, DriveStep } from 'driver.js';
 import 'driver.js/dist/driver.css';
 import {
   createInitialAppState,
+  DEMO_PROJECT_MARUMARU,
   SAMPLE_MEETING_MINUTES,
 } from '../data/initialData';
-import { EditorExternalTarget } from '../components/SubsidyEditor';
 import {
+  Role,
+  ScreenId,
+  WorkspaceTabId,
   AdminTabId,
   DocumentStatus,
   PhaseGate,
-  Role,
-  ScreenId,
   SubsidyAppState,
   SubsidyType,
-  WorkspaceTabId,
 } from '../types';
-import { TOUR_SNAPSHOT_SESSION_KEY } from './useSubsidyStore';
+import { EditorExternalTarget } from '../components/SubsidyEditor';
 
-interface UseDemoTourParams {
+const TOUR_SNAPSHOT_SESSION_KEY = 'subsidy_tour_pre_snapshot_v1';
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function waitForSelector(selector: string, timeoutMs = 2500): Promise<Element | null> {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      const el = document.querySelector(selector);
+      if (el) {
+        resolve(el);
+        return;
+      }
+      if (Date.now() - start > timeoutMs) {
+        resolve(null);
+        return;
+      }
+      requestAnimationFrame(check);
+    };
+    check();
+  });
+}
+
+export interface UseDemoTourParams {
   state: SubsidyAppState;
   guideOpen: boolean;
   setGuideOpen: (open: boolean) => void;
-  replaceState: (nextState: SubsidyAppState) => void;
+  replaceState: (newState: SubsidyAppState) => void;
   setRole: (role: Role) => void;
   setActiveScreen: (screen: ScreenId) => void;
   setWorkspaceTab: (tab: WorkspaceTabId) => void;
@@ -30,13 +55,13 @@ interface UseDemoTourParams {
   setEditorExternalTarget: (target: EditorExternalTarget | null) => void;
   selectProject: (
     projectId: string,
-    openScreen?: ScreenId,
-    tab?: WorkspaceTabId
+    initialScreen?: ScreenId,
+    initialWorkspaceTab?: WorkspaceTabId
   ) => void;
   updateRawHearingText: (
     projectId: string,
-    rawText: string,
-    sourceNote?: string
+    text: string,
+    historyLabel?: string
   ) => void;
   importSampleHearingSheetExcel: (projectId: string) => void;
   generateMasterFromHearing: (projectId: string) => void;
@@ -47,37 +72,16 @@ interface UseDemoTourParams {
   appendTourModuleAndSave: (
     projectId: string,
     subsidyType: SubsidyType,
-    status: DocumentStatus
+    status?: DocumentStatus
   ) => void;
   runAICrossCheck: (projectId: string, subsidyType: SubsidyType) => void;
   setGatePassed: (
     projectId: string,
     gateId: PhaseGate['id'],
-    isPassed: boolean
+    passed: boolean
   ) => void;
   onNotify: (message: string) => void;
 }
-
-function waitMs(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
-
-async function waitForSelector(
-  selector: string,
-  maxWaitMs = 1500
-): Promise<Element | null> {
-  const start = Date.now();
-  while (Date.now() - start < maxWaitMs) {
-    const el = document.querySelector(selector);
-    if (el) return el;
-    await waitMs(45);
-  }
-  return document.querySelector(selector);
-}
-
-const DEMO_PROJECT_ID = 'proj-tech-precision';
 
 export function useDemoTour({
   state,
@@ -87,16 +91,14 @@ export function useDemoTour({
   setRole,
   setActiveScreen,
   setWorkspaceTab,
-  setAdminTab,
-  setEditorExternalTarget,
   selectProject,
   updateRawHearingText,
   importSampleHearingSheetExcel,
   generateMasterFromHearing,
   syncMasterToSubsidies,
-  applyHearingDriversToForecast,
   lockFinancialPlan,
   unlockFinancialPlan,
+  setEditorExternalTarget,
   appendTourModuleAndSave,
   runAICrossCheck,
   setGatePassed,
@@ -158,124 +160,131 @@ export function useDemoTour({
 
       switch (stepIndex) {
         case 0: {
-          // Step 1: 3補助金親子構造（マッピング表）
+          // Step 1: マッピング親マスター構造
           setRole('営業担当');
-          selectProject(DEMO_PROJECT_ID);
+          selectProject(DEMO_PROJECT_MARUMARU.id);
           setActiveScreen('mapping');
           await waitMs(120);
           await waitForSelector('[data-guide-id="guide-mapping-hierarchy"]');
           break;
         }
         case 1: {
-          // Step 2: 案件ダッシュボードKPI・導入効果試算
+          // Step 2: 全体スケジュール工程表・フェーズゲート
           setRole('営業担当');
-          setActiveScreen('projects');
-          await waitMs(120);
-          await waitForSelector('[data-guide-id="guide-dashboard-kpi"]');
-          break;
-        }
-        case 2: {
-          // Step 3: 標準工程表・フェーズゲート
-          setRole('営業担当');
-          selectProject(DEMO_PROJECT_ID, 'workspace', 'schedule');
+          selectProject(DEMO_PROJECT_MARUMARU.id, 'workspace', 'schedule');
           await waitMs(120);
           await waitForSelector('[data-guide-id="guide-gantt-gates"]');
           break;
         }
-        case 3: {
-          // Step 4: 議事録・Excelヒアリングシート取込 → 定性4項目生成＆3補助金同期（Gate 1通過）
+        case 2: {
+          // Step 3: 共有URL発行ボタン
           setRole('営業担当');
-          selectProject(DEMO_PROJECT_ID, 'workspace', 'hearing');
+          selectProject(DEMO_PROJECT_MARUMARU.id, 'workspace', 'schedule');
+          await waitMs(120);
+          await waitForSelector('[data-guide-id="guide-gantt-share"]');
+          break;
+        }
+        case 3: {
+          // Step 4: 議事録・Excelヒアリングシート取込 → 定性4項目生成
+          setRole('営業担当');
+          selectProject(DEMO_PROJECT_MARUMARU.id, 'workspace', 'hearing');
           updateRawHearingText(
-            DEMO_PROJECT_ID,
+            DEMO_PROJECT_MARUMARU.id,
             SAMPLE_MEETING_MINUTES,
             '初回ヒアリング議事録（デモツアー自動取込）'
           );
-          importSampleHearingSheetExcel(DEMO_PROJECT_ID);
-          generateMasterFromHearing(DEMO_PROJECT_ID);
-          syncMasterToSubsidies(DEMO_PROJECT_ID);
+          importSampleHearingSheetExcel(DEMO_PROJECT_MARUMARU.id);
+          generateMasterFromHearing(DEMO_PROJECT_MARUMARU.id);
+          syncMasterToSubsidies(DEMO_PROJECT_MARUMARU.id);
           await waitMs(180);
           await waitForSelector('[data-guide-id="guide-hearing-master"]');
           break;
         }
         case 4: {
-          // Step 5: 数値計画の算定変数（単価・客数・削減工数・新規雇用）
+          // Step 5: 数値計画の算定変数
           setRole('営業担当');
-          selectProject(DEMO_PROJECT_ID, 'workspace', 'hearing');
+          selectProject(DEMO_PROJECT_MARUMARU.id, 'workspace', 'hearing');
           await waitMs(120);
           await waitForSelector('[data-guide-id="guide-hearing-variables"]');
           break;
         }
         case 5: {
-          // Step 6: 【重要】Gate 2 未確定時の申請書エディタ全面ロックを体験
-          unlockFinancialPlan(DEMO_PROJECT_ID);
+          // Step 6: 決算書取込タブの見比べ画面
           setRole('書類作成者');
-          selectProject(DEMO_PROJECT_ID, 'workspace', 'editor');
+          selectProject(DEMO_PROJECT_MARUMARU.id, 'workspace', 'financial');
+          await waitMs(150);
+          const importBtn = document.querySelector<HTMLButtonElement>(
+            'button[title*="決算書PDF取込"]'
+          );
+          importBtn?.click();
+          await waitMs(150);
+          await waitForSelector('[data-guide-id="guide-fin-import"]');
+          break;
+        }
+        case 6: {
+          // Step 7: 計画シミュレーションタブ
+          setRole('書類作成者');
+          selectProject(DEMO_PROJECT_MARUMARU.id, 'workspace', 'financial');
+          await waitMs(150);
+          const simTabBtn = document.querySelector<HTMLButtonElement>(
+            '[data-guide-id="guide-fin-simulation"]'
+          );
+          simTabBtn?.click();
+          await waitMs(150);
+          await waitForSelector('[data-guide-id="guide-fin-simulation"]');
+          break;
+        }
+        case 7: {
+          // Step 8: 自動調整パネル（ソルバー）
+          setRole('書類作成者');
+          selectProject(DEMO_PROJECT_MARUMARU.id, 'workspace', 'financial');
+          await waitMs(150);
+          const simTabBtn = document.querySelector<HTMLButtonElement>(
+            '[data-guide-id="guide-fin-simulation"]'
+          );
+          simTabBtn?.click();
+          await waitMs(150);
+          await waitForSelector('[data-guide-id="guide-fin-solver"]');
+          break;
+        }
+        case 8: {
+          // Step 9: 版管理ボタン
+          setRole('書類作成者');
+          selectProject(DEMO_PROJECT_MARUMARU.id, 'workspace', 'financial');
+          await waitMs(150);
+          await waitForSelector('[data-guide-id="guide-fin-versions"]');
+          break;
+        }
+        case 9: {
+          // Step 10: Excel出力ボタン
+          setRole('書類作成者');
+          selectProject(DEMO_PROJECT_MARUMARU.id, 'workspace', 'financial');
+          await waitMs(150);
+          await waitForSelector('[data-guide-id="guide-fin-export"]');
+          break;
+        }
+        case 10: {
+          // Step 11: Gate 2 未確定時の申請書エディタ全面ロック
+          unlockFinancialPlan(DEMO_PROJECT_MARUMARU.id);
+          setRole('書類作成者');
+          selectProject(DEMO_PROJECT_MARUMARU.id, 'workspace', 'editor');
           await waitMs(150);
           await waitForSelector('[data-guide-id="guide-editor-blocker"]');
           break;
         }
-        case 6: {
-          // Step 7: 収支計画マスター 売上・コスト算定根拠の反映
-          setRole('書類作成者');
-          selectProject(DEMO_PROJECT_ID, 'workspace', 'financial');
-          applyHearingDriversToForecast(DEMO_PROJECT_ID);
-          await waitMs(150);
-          await waitForSelector('[data-guide-id="guide-fin-drivers"]');
-          break;
-        }
-        case 7: {
-          // Step 8: 公募要件（付加価値・賃上げ・規模別上限）自動判定
-          setRole('書類作成者');
-          selectProject(DEMO_PROJECT_ID, 'workspace', 'financial');
-          await waitMs(120);
-          await waitForSelector('[data-guide-id="guide-fin-requirements"]');
-          break;
-        }
-        case 8: {
-          // Step 9: 補助金別 様式換算イメージ
-          setRole('書類作成者');
-          selectProject(DEMO_PROJECT_ID, 'workspace', 'financial');
-          await waitMs(120);
-          await waitForSelector('[data-guide-id="guide-fin-formats"]');
-          break;
-        }
-        case 9: {
-          // Step 10: 収支計画マスター確定ロック（Gate 2通過）
-          setRole('書類作成者');
-          selectProject(DEMO_PROJECT_ID, 'workspace', 'financial');
-          lockFinancialPlan(DEMO_PROJECT_ID);
-          await waitMs(150);
-          await waitForSelector('[data-guide-id="guide-fin-lock"]');
-          break;
-        }
-        case 10: {
-          // Step 11: ロック解除後の申請書エディタ（文字数ゲージ・審査項目チェック）
-          lockFinancialPlan(DEMO_PROJECT_ID);
-          setRole('書類作成者');
-          selectProject(DEMO_PROJECT_ID, 'workspace', 'editor');
-          setEditorExternalTarget({
-            subsidyType: '新事業進出補助金',
-            sectionId: 'shin-3',
-            nonce: Date.now(),
-          });
-          await waitMs(180);
-          await waitForSelector('[data-guide-id="guide-editor-charlimit"]');
-          break;
-        }
         case 11: {
           // Step 12: 文章モジュール挿入＆保存による修正差異（Diff）自動記録
-          lockFinancialPlan(DEMO_PROJECT_ID);
+          lockFinancialPlan(DEMO_PROJECT_MARUMARU.id);
           setRole('書類作成者');
-          selectProject(DEMO_PROJECT_ID, 'workspace', 'editor');
+          selectProject(DEMO_PROJECT_MARUMARU.id, 'workspace', 'editor');
           setEditorExternalTarget({
-            subsidyType: '新事業進出補助金',
+            subsidyType: '新事業進出・ものづくり商業サービス補助金',
             sectionId: 'shin-3',
             nonce: Date.now(),
           });
           appendTourModuleAndSave(
-            DEMO_PROJECT_ID,
-            '新事業進出補助金',
+            DEMO_PROJECT_MARUMARU.id,
+            '新事業進出・ものづくり商業サービス補助金',
             '完成'
           );
           await waitMs(180);
@@ -283,18 +292,21 @@ export function useDemoTour({
           break;
         }
         case 12: {
-          // Step 13: 定性・定量 自動数値突合＆AIクロスチェック実行（Gate 3通過）
-          lockFinancialPlan(DEMO_PROJECT_ID);
+          // Step 13: 定性・定量 自動数値突合＆AIクロスチェック実行
+          lockFinancialPlan(DEMO_PROJECT_MARUMARU.id);
           setRole('書類作成者');
-          selectProject(DEMO_PROJECT_ID, 'workspace', 'consistency');
-          runAICrossCheck(DEMO_PROJECT_ID, '新事業進出補助金');
-          setGatePassed(DEMO_PROJECT_ID, 'gate-3', true);
+          selectProject(DEMO_PROJECT_MARUMARU.id, 'workspace', 'consistency');
+          runAICrossCheck(
+            DEMO_PROJECT_MARUMARU.id,
+            '新事業進出・ものづくり商業サービス補助金'
+          );
+          setGatePassed(DEMO_PROJECT_MARUMARU.id, 'gate-3', true);
           await waitMs(180);
           await waitForSelector('[data-guide-id="guide-consistency-ai"]');
           break;
         }
         case 13: {
-          // Step 14: 3補助金マッピング対照表
+          // Step 14: マッピング対照表
           setActiveScreen('mapping');
           await waitMs(140);
           await waitForSelector('[data-guide-id="guide-mapping-table"]');
@@ -307,15 +319,6 @@ export function useDemoTour({
           await waitForSelector('[data-guide-id="guide-prompts-generation"]');
           break;
         }
-        case 15: {
-          // Step 16: 管理者設定（公募回バージョン管理・要件しきい値・差異分析）
-          setRole('システム管理者');
-          setAdminTab('thresholds');
-          setActiveScreen('admin');
-          await waitMs(150);
-          await waitForSelector('[data-guide-id="guide-admin-rounds"]');
-          break;
-        }
         default:
           break;
       }
@@ -324,14 +327,12 @@ export function useDemoTour({
     },
     [
       appendTourModuleAndSave,
-      applyHearingDriversToForecast,
       generateMasterFromHearing,
       importSampleHearingSheetExcel,
       lockFinancialPlan,
       runAICrossCheck,
       selectProject,
       setActiveScreen,
-      setAdminTab,
       setEditorExternalTarget,
       setGatePassed,
       setRole,
@@ -378,29 +379,29 @@ export function useDemoTour({
       {
         element: '[data-guide-id="guide-mapping-hierarchy"]',
         popover: {
-          title: 'Step 1/17｜3補助金の親子マスター構造【指示書 2】',
+          title: 'Step 1/15｜マッピング親マスター構造',
           description:
-            '新事業進出補助金を「親マスター」とし、持続化補助金は【引き算・要約】、東京都事業は【要件追加】として1回の入力から3制度へ展開する全体設計です。',
+            '新事業進出・ものづくり商業サービス補助金を親マスターとし、各様式・項目へ展開する全体設計です。',
           side: 'bottom',
           align: 'center',
         },
       },
       {
-        element: '[data-guide-id="guide-dashboard-kpi"]',
+        element: '[data-guide-id="guide-gantt-gates"]',
         popover: {
-          title: 'Step 2/17｜案件ダッシュボードKPI・導入効果試算',
+          title: 'Step 2/15｜全体スケジュール工程表とフェーズゲート',
           description:
-            '進行中案件数、申請締切14日以内アラート、フェーズゲート通過状況、ロール別の対応待ち件数を集約表示します。上部には手作業比の工数削減試算も提示します。',
+            '実案件「株式会社○○」を開きました。顧客タスクと支援側タスクを全体スケジュールで管理し、フェーズゲートで手戻りを防止します。',
           side: 'bottom',
           align: 'start',
         },
       },
       {
-        element: '[data-guide-id="guide-gantt-gates"]',
+        element: '[data-guide-id="guide-gantt-share"]',
         popover: {
-          title: 'Step 3/17｜標準8週間工程表とフェーズゲート【指示書 4-⑥】',
+          title: 'Step 3/15｜共有URL発行（工程表の共有）',
           description:
-            '実案件「株式会社テックプレシジョン」を開きました。顧客タスクと支援側タスクをW1〜W8で管理し、4つのフェーズゲートで手戻りを防止します。',
+            '顧客や社内関係者へ工程表を共有するための閲覧専用URLを発行・クリップボードにコピーできます。',
           side: 'bottom',
           align: 'start',
         },
@@ -408,10 +409,9 @@ export function useDemoTour({
       {
         element: '[data-guide-id="guide-hearing-master"]',
         popover: {
-          title:
-            'Step 4/17｜議事録・Excel取込と定性4項目自動生成【指示書 4-①】',
+          title: 'Step 4/15｜議事録・Excel取込と定性4項目自動生成',
           description:
-            'ヒアリング議事録とExcelシートを取り込み、共通マスター定性4項目を自動生成して3補助金のベース文案へ一括同期しました（Gate 1 通過）。',
+            'ヒアリング議事録とExcelシートを取り込み、共通マスター定性4項目を自動生成してベース文案へ一括同期しました（Gate 1 通過）。',
           side: 'top',
           align: 'start',
         },
@@ -419,17 +419,67 @@ export function useDemoTour({
       {
         element: '[data-guide-id="guide-hearing-variables"]',
         popover: {
-          title: 'Step 5/17｜数値計画の算定変数と根拠メモ【指示書 4-①】',
+          title: 'Step 5/15｜数値計画の算定変数と根拠メモ',
           description:
-            '新事業客単価（50万円）・想定受注件数（160→280件）・削減作業時間（1,680時間/年）・新規雇用人数（計6名）とヒアリング根拠メモを一元管理します。',
+            '新事業客単価・想定受注件数・削減作業時間・新規雇用人数とヒアリング根拠メモを一元管理します。',
           side: 'top',
+          align: 'start',
+        },
+      },
+      {
+        element: '[data-guide-id="guide-fin-import"]',
+        popover: {
+          title: 'Step 6/15｜決算書PDF取込と見比べ画面',
+          description:
+            '決算書PDFのOCRテキストとシステム科目を左右で見比べ、確実な科目紐付けと確定ロックを行います。',
+          side: 'top',
+          align: 'start',
+        },
+      },
+      {
+        element: '[data-guide-id="guide-fin-simulation"]',
+        popover: {
+          title: 'Step 7/15｜計画シミュレーション',
+          description:
+            '売上・原価・人件費などの前提値を設定し、将来予測PLをリアルタイムに自動計算します。',
+          side: 'bottom',
+          align: 'start',
+        },
+      },
+      {
+        element: '[data-guide-id="guide-fin-solver"]',
+        popover: {
+          title: 'Step 8/15｜前提値の自動調整（ソルバー）',
+          description:
+            '公募要件の目標値（中央値）に向け、選択した前提変数を自動探索（逆算）で調整します。',
+          side: 'top',
+          align: 'start',
+        },
+      },
+      {
+        element: '[data-guide-id="guide-fin-versions"]',
+        popover: {
+          title: 'Step 9/15｜収支計画の版管理',
+          description:
+            '検討段階ごとの収支計画を版（バージョン）として保存し、差分比較や過去版への復元を行えます。',
+          side: 'bottom',
+          align: 'start',
+        },
+      },
+      {
+        element: '[data-guide-id="guide-fin-export"]',
+        popover: {
+          title: 'Step 10/15｜Excel出力',
+          description:
+            '公式インポート用フォーマットや顧客説明用サマリーをExcel形式で出力します。',
+          side: 'bottom',
           align: 'start',
         },
       },
       {
         element: '[data-guide-id="guide-editor-blocker"]',
         popover: {
-          title: 'Step 6/17｜【重要体験】Gate 2 未確定時の申請書エディタロック',
+          title: 'Step 11/15｜Gate 2 未確定時の申請書エディタロック',
           description:
             '収支計画マスター（Gate 2）が未確定の段階では、申請書エディタが全面ロックされます。「数字が変わって本文を全部書き直す」手戻りをシステム構造で防ぎます。',
           side: 'bottom',
@@ -437,63 +487,11 @@ export function useDemoTour({
         },
       },
       {
-        element: '[data-guide-id="guide-fin-drivers"]',
-        popover: {
-          title: 'Step 7/17｜売上・コスト算定根拠の計画反映【指示書 4-②】',
-          description:
-            'ヒアリング変数の「客単価×受注件数」「削減時間×時間単価＋外注費削減」の計算式を明示し、ワンクリックで将来3ヶ年の売上計画へ反映しました。',
-          side: 'bottom',
-          align: 'start',
-        },
-      },
-      {
-        element: '[data-guide-id="guide-fin-requirements"]',
-        popover: {
-          title: 'Step 8/17｜公募要件・上下限の自動判定【指示書 4-②】',
-          description:
-            '付加価値額年率（+4.0%以上）・一人当たり給与年率・従業員規模別上限・下限750万円・賃上げ特例を自動判定し、要件未達時は即座に警告を表示します。',
-          side: 'top',
-          align: 'start',
-        },
-      },
-      {
-        element: '[data-guide-id="guide-fin-formats"]',
-        popover: {
-          title: 'Step 9/17｜3補助金 様式換算イメージへの自動変換【指示書 4-②】',
-          description:
-            '共通の財務データと投資内訳から、新事業進出・持続化・東京都それぞれの様式・勘定科目・経費区分へ重複入力なしで自動並べ替えを行います。',
-          side: 'top',
-          align: 'start',
-        },
-      },
-      {
-        element: '[data-guide-id="guide-fin-lock"]',
-        popover: {
-          title: 'Step 10/17｜収支計画マスター確定・Gate 2 通過',
-          description:
-            '収支計画マスターを確定ロックしました。これでGate 2が通過となり、申請書エディタの編集ロックが解除されます。',
-          side: 'bottom',
-          align: 'end',
-        },
-      },
-      {
-        element: '[data-guide-id="guide-editor-charlimit"]',
-        popover: {
-          title:
-            'Step 11/17｜エディタ解禁・文字数ゲージ＆審査項目チェック【指示書 ゴール / 5】',
-          description:
-            'ロック解除された申請書エディタです。公募回ごとの指定文字数ゲージ（80%未満／適正／超過）と、審査項目キーワードの記載有無（記載あり✓）を自動判定します。',
-          side: 'bottom',
-          align: 'start',
-        },
-      },
-      {
         element: '[data-guide-id="guide-editor-save"]',
         popover: {
-          title:
-            'Step 12/17｜変数タグ置換モジュール挿入と修正差異（Diff）記録【指示書 4-③】',
+          title: 'Step 12/15｜変数タグ置換モジュール挿入と修正差異（Diff）記録',
           description:
-            '投資回収モジュールを確定数値で自動置換して挿入・保存しました。AI初期文案からの人手修正は自動的に差異ログ（Diff）へ蓄積されます。',
+            '投資回収モジュールを確定数値で自動置換して挿入・保存しました。人手修正は自動的に差異ログ（Diff）へ蓄積されます。',
           side: 'top',
           align: 'end',
         },
@@ -501,10 +499,9 @@ export function useDemoTour({
       {
         element: '[data-guide-id="guide-consistency-ai"]',
         popover: {
-          title:
-            'Step 13/17｜定性・定量 自動数値突合＆AIクロスチェック【指示書 4-⑤】',
+          title: 'Step 13/15｜定性・定量 自動数値突合＆AIクロスチェック',
           description:
-            '投資総額・申請額・売上・単価×客数・新規雇用人数を財務マスターと自動突合し、AIクロスチェック監査を実行して数値矛盾ゼロを確認しました（Gate 3 通過）。',
+            '投資総額・申請額・売上・賃上げ要件等を財務マスターと自動突合し、AIクロスチェック監査を実行して数値矛盾ゼロを確認しました（Gate 3 通過）。',
           side: 'top',
           align: 'start',
         },
@@ -512,9 +509,9 @@ export function useDemoTour({
       {
         element: '[data-guide-id="guide-mapping-table"]',
         popover: {
-          title: 'Step 14/17｜3補助金マッピング対照表【指示書 4-④】',
+          title: 'Step 14/15｜マッピング対照表',
           description:
-            '共通マスター項目が3補助金のどの申請項目へ「全文／要約／補強」および指定文字数で展開されるかを一覧表示します。セルクリックで該当エディタへ移動できます。',
+            '共通マスター項目が新事業進出・ものづくり商業サービス補助金のどの申請項目へ展開されるかを一覧表示します。',
           side: 'top',
           align: 'start',
         },
@@ -522,21 +519,10 @@ export function useDemoTour({
       {
         element: '[data-guide-id="guide-prompts-generation"]',
         popover: {
-          title: 'Step 15/17｜生成AI用プロンプト集【指示書 4-⑦】',
+          title: 'Step 15/15｜生成AI用プロンプト集',
           description:
-            '3補助金×各3セクションの文章生成プロンプト（計9本）と整合性チェック用プロンプトです。「マスター外の数値捏造禁止」ルールが標準内蔵されています。',
+            '文章生成プロンプトと整合性チェック用プロンプトです。「マスター外の数値捏造禁止」ルールが標準内蔵されています。',
           side: 'top',
-          align: 'start',
-        },
-      },
-      {
-        element: '[data-guide-id="guide-admin-rounds"]',
-        popover: {
-          title:
-            'Step 16/17｜公募回バージョン管理・要件しきい値・差異分析【指示書 5】',
-          description:
-            '公募要領の改定時は公募回を複製し、要件しきい値（出典URL付）・審査項目・文字数上限・プロンプトをシステム改修なしでメンテナンスできます。',
-          side: 'bottom',
           align: 'start',
           nextBtnText: '完了サマリーへ →',
         },
@@ -560,7 +546,6 @@ export function useDemoTour({
       onNextClick: async () => {
         const currentIdx = drv.getActiveIndex() ?? 0;
         if (currentIdx >= steps.length - 1) {
-          // Step 16 → Step 17（完了サマリーモーダル表示）
           enteringCompletionRef.current = true;
           programmaticDestroyRef.current = true;
           drv.destroy();

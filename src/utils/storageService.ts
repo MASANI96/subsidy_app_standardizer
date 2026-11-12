@@ -31,7 +31,7 @@ export interface StoredFileRecord {
   id: string; // ファイルの一意識別子
   projectId: string; // 案件ID
   fileName: string; // ファイル名
-  fileType: string; // MIMEタイプ（application/pdf, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet など）
+  fileType: string; // MIMEタイプ
   fileSize: number; // バイト数
   data: ArrayBuffer | Blob; // 実バイナリ
   uploadedAt: string; // アップロード日時

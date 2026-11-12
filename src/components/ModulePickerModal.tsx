@@ -3,6 +3,8 @@ import { TEXT_MODULE_CATEGORIES } from '../data/initialData';
 import {
   Project,
   ReviewCriterion,
+  SubsidyRequirements,
+  SubsidyTrack,
   TextModule,
   TextModuleCategory,
 } from '../types';
@@ -16,6 +18,8 @@ interface ModulePickerModalProps {
   project: Project;
   modules: TextModule[];
   reviewCriteria?: ReviewCriterion[];
+  track?: SubsidyTrack;
+  requirements?: SubsidyRequirements;
   onInsertText: (interpolatedText: string, mode: 'append' | 'replace') => void;
   onClose: () => void;
 }
@@ -44,6 +48,8 @@ export const ModulePickerModal: React.FC<ModulePickerModalProps> = ({
   project,
   modules,
   reviewCriteria = [],
+  track,
+  requirements,
   onInsertText,
   onClose,
 }) => {
@@ -200,7 +206,12 @@ export const ModulePickerModal: React.FC<ModulePickerModalProps> = ({
             </div>
           ) : (
             filteredModules.map((mod) => {
-              const interpolated = interpolateTags(mod.templateText, project);
+              const interpolated = interpolateTags(
+                mod.templateText,
+                project,
+                track,
+                requirements
+              );
               const linkedCriteria = (mod.relatedCriteriaIds ?? [])
                 .map((cid) => criteriaMap[cid])
                 .filter(Boolean);

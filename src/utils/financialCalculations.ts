@@ -22,6 +22,7 @@ import {
   SubsidyTrack,
   TrackCapTier,
 } from '../types';
+import { INITIAL_CALL_ROUNDS } from '../data/initialData';
 
 /**
  * 金額フォーマット関数（円単位整数 → 指定表示単位＋端数処理）
@@ -92,21 +93,29 @@ export function parseToYen(
 /**
  * 申請時事業年度と基準年度の自動算出ロジック
  * 基準年度 ＝ 補助事業完了予定日を含む事業年度
+ * @param fiscalMonth 決算月
+ * @param applicationDeadline 申請締切日
+ * @param adoptionDate 採択予定日
+ * @param executionPeriodMonths 補助事業実施期間（月数）
+ * @param grantDecisionLeadMonths 採択から交付決定までの見込み月数
+ * @param overriddenCurrentFY 手動指定申請時事業年度
+ * @param overriddenBaseFY 手動指定基準年度
  */
 export function calculateFiscalYears(
   fiscalMonth: number,
   applicationDeadline: string,
   adoptionDate: string,
   executionPeriodMonths: number,
+  grantDecisionLeadMonths: number,
   overriddenCurrentFY?: number,
   overriddenBaseFY?: number
 ): AutoFiscalYearCalculation {
   const deadlineDate = new Date(applicationDeadline || '2026-12-25');
   const adoptDate = new Date(adoptionDate || '2027-02-28');
 
-  // 交付決定見込日: 採択予定日のおよそ1ヶ月後 (初期値例: 2027-04-01)
+  // 交付決定見込日: 採択日＋grantDecisionLeadMonths か月（その月の1日）
   const grantDate = new Date(adoptDate);
-  grantDate.setMonth(grantDate.getMonth() + 1);
+  grantDate.setMonth(grantDate.getMonth() + grantDecisionLeadMonths);
   grantDate.setDate(1);
 
   // 完了予定日: 交付決定見込日 + 実施期間（月数）
@@ -139,9 +148,8 @@ export function calculateFiscalYears(
     typeof overriddenBaseFY === 'number' && overriddenBaseFY !== calculatedBaseFY;
 
   const explanation =
-    `【自動算出根拠】申請締切日: ${applicationDeadline} → 採択予定日: ${adoptionDate} → ` +
-    `交付決定見込日: ${grantDateStr} ＋ 補助事業実施期間: ${executionPeriodMonths}か月 → ` +
-    `事業完了予定日: ${completionDateStr}。` +
+    `【自動算出根拠】申請締切日: ${applicationDeadline} → 採択予定日${adoptionDate}＋${grantDecisionLeadMonths}か月＝交付決定見込日${grantDateStr} ＋ ` +
+    `補助事業実施期間: ${executionPeriodMonths}か月 → 事業完了予定日: ${completionDateStr}。` +
     `貴社の決算月は${fiscalMonth}月のため、事業完了日を含む事業年度は【${calculatedBaseFY}年${fiscalMonth}月期（基準年度）】、` +
     `締切日時点の事業年度は【${calculatedCurrentFY}年${fiscalMonth}月期（申請時事業年度）】と確定算出されます。`;
 
@@ -740,66 +748,235 @@ export function resolveShinJigyoCapTier(baseEmployees: number, capTiers: any[]) 
   return capTiers[capTiers.length - 1];
 }
 
-export function evaluateSubsidyRequirements(fm: any, thresholds: any) {
-  const baseSales = fm?.periods?.y0?.pl?.totalSales || 2400000000;
-  const targetSales = fm?.periods?.p3?.pl?.totalSales || 3180000000;
+export interface ConsistencyCheckItem {
+  id: string;
+  category: string;
+  label: string;
+  documentSnippet: string;
+  financialValue: string;
+  status: 'match' | 'mismatch' | 'unverified';
+  note: string;
+  isWarning?: boolean;
+}
+
+/**
+ * 補助金公募要件の総合評価（各補助金様式対応版）
+ * 内部で evaluateRequirements を呼び出し、互換性のある形式で返却
+ */
+export function evaluateSubsidyRequirements(
+  fm: any,
+  _thresholds?: any,
+  track?: SubsidyTrack,
+  req?: SubsidyRequirements
+) {
+  const activeRound = INITIAL_CALL_ROUNDS[0];
+  const resolvedTrack =
+    track ||
+    (fm?.appliedTrackId
+      ? activeRound.tracks.find((t) => t.id === fm.appliedTrackId)
+      : undefined) ||
+    activeRound.tracks[0];
+  const resolvedReq = req || activeRound.requirements;
+
+  let evalRes: EvaluationResult;
+  try {
+    evalRes = evaluateRequirements(fm, resolvedTrack, resolvedReq);
+  } catch {
+    return {
+      vaGrowthAnnual: 0,
+      wageGrowthAnnual: 0,
+      perCapitaWageBase: 0,
+      perCapitaWageY3: 0,
+      perCapitaWageGrowthAnnual: 0,
+      shinJigyo: {
+        eligibleExpense: 0,
+        appliedRateNum: 1,
+        appliedRateDen: 2,
+        tierLabel: '-',
+        effectiveMaxCap: 0,
+        minSubsidyAmount: 0,
+        targetPerCapitaWageGrowth: 0,
+        minWagePlusYen: 0,
+        calculatedSubsidy: 0,
+        cappedSubsidy: 0,
+        isVaPassed: false,
+        isWagePassed: false,
+        isFundingBalanced: false,
+        isMinSubsidyPassed: false,
+        isWithinCap: false,
+        isAllPassed: false,
+      },
+      jizokuka: {
+        eligibleExpense: 0,
+        appliedRateNum: 2,
+        appliedRateDen: 3,
+        effectiveMaxCap: 250,
+        calculatedSubsidy: 0,
+        cappedSubsidy: 0,
+        isOverCapWarning: false,
+      },
+      tokyo: {
+        eligibleExpense: 0,
+        appliedRateNum: 2,
+        appliedRateDen: 3,
+        effectiveMaxCap: 800,
+        calculatedSubsidy: 0,
+        cappedSubsidy: 0,
+        isWithinCap: false,
+      },
+    };
+  }
+
+  const totalInv = fm?.investment?.totalInvestmentYen || 0;
+  const eligibleMan = Math.floor(totalInv / 10000);
+  const baseFYPerCapita = fm?.periods?.baseFY?.pl?.perCapitaWage || 0;
+  const p3PerCapita = fm?.periods?.p3?.pl?.perCapitaWage || 0;
+
   return {
-    vaGrowthAnnual: 4.2,
-    wageGrowthAnnual: 3.8,
-    perCapitaWageBase: 520,
-    perCapitaWageY3: 600,
-    perCapitaWageGrowthAnnual: 3.8,
+    vaGrowthAnnual: evalRes.vaCAGR,
+    wageGrowthAnnual: evalRes.wageCAGR,
+    perCapitaWageBase: Math.round(baseFYPerCapita / 10000),
+    perCapitaWageY3: Math.round(p3PerCapita / 10000),
+    perCapitaWageGrowthAnnual: evalRes.wageCAGR,
     shinJigyo: {
-      eligibleExpense: 10000,
-      appliedRateNum: 1,
-      appliedRateDen: 2,
-      tierLabel: '21〜50人',
-      effectiveMaxCap: 5000,
-      minSubsidyAmount: 750,
-      targetPerCapitaWageGrowth: 3.5,
-      minWagePlusYen: 30,
-      calculatedSubsidy: 5000,
-      cappedSubsidy: 5000,
-      isVaPassed: true,
-      isWagePassed: true,
+      eligibleExpense: eligibleMan,
+      appliedRateNum: resolvedTrack.subsidyRateNumerator,
+      appliedRateDen: resolvedTrack.subsidyRateDenominator,
+      tierLabel: evalRes.applicableCapTier?.label || '20人以下',
+      effectiveMaxCap: Math.floor(evalRes.effectiveCapYen / 10000),
+      minSubsidyAmount: Math.floor(resolvedTrack.minSubsidyAmountYen / 10000),
+      targetPerCapitaWageGrowth: fm?.isWageSpecialApplied
+        ? resolvedReq.wageSpecialCAGR
+        : resolvedReq.wageCAGR,
+      minWagePlusYen: fm?.isWageSpecialApplied
+        ? resolvedReq.wageSpecialMinWageDiffYen
+        : resolvedReq.minWageDiffYen,
+      calculatedSubsidy: Math.floor(evalRes.calculatedSubsidyYen / 10000),
+      cappedSubsidy: Math.floor(
+        Math.min(evalRes.calculatedSubsidyYen, evalRes.effectiveCapYen) / 10000
+      ),
+      isVaPassed: evalRes.isVAPassed,
+      isWagePassed: evalRes.isWagePassed,
       isFundingBalanced: true,
-      isMinSubsidyPassed: true,
-      isWithinCap: true,
-      isAllPassed: true,
+      isMinSubsidyPassed: evalRes.isMinSubsidyPassed,
+      isWithinCap: evalRes.isSubsidyWithinCap,
+      isAllPassed: evalRes.isAllPassed,
     },
     jizokuka: {
-      eligibleExpense: 10000,
+      eligibleExpense: eligibleMan,
       appliedRateNum: 2,
       appliedRateDen: 3,
       effectiveMaxCap: 250,
-      calculatedSubsidy: 6666,
-      cappedSubsidy: 250,
-      isOverCapWarning: true,
+      calculatedSubsidy: Math.floor((eligibleMan * 2) / 3),
+      cappedSubsidy: Math.min(Math.floor((eligibleMan * 2) / 3), 250),
+      isOverCapWarning: Math.floor((eligibleMan * 2) / 3) > 250,
     },
     tokyo: {
-      eligibleExpense: 10000,
+      eligibleExpense: eligibleMan,
       appliedRateNum: 2,
       appliedRateDen: 3,
       effectiveMaxCap: 800,
-      calculatedSubsidy: 6666,
-      cappedSubsidy: 800,
-      isWithinCap: false,
+      calculatedSubsidy: Math.floor((eligibleMan * 2) / 3),
+      cappedSubsidy: Math.min(Math.floor((eligibleMan * 2) / 3), 800),
+      isWithinCap: Math.floor((eligibleMan * 2) / 3) <= 800,
     },
   };
 }
 
-export function interpolateTags(templateText: string, project: any): string {
+/**
+ * 申請書テンプレートテキスト内の変数タグを収支計画マスターの実数値で置換
+ * @param templateText テンプレートテキスト
+ * @param project 対象プロジェクト
+ * @param track 対象申請枠（省略時はプロジェクトまたは初期公募回の枠）
+ * @param req 対象公募要件（省略時は初期公募回の要件）
+ */
+export function interpolateTags(
+  templateText: string,
+  project: any,
+  track?: SubsidyTrack,
+  req?: SubsidyRequirements
+): string {
   if (!templateText) return '';
+  const fm: ProjectFinancialMaster | undefined = project?.financialMaster;
   const pName = project?.companyName || '株式会社○○';
-  const totalInv = project?.financialMaster?.investment?.totalInvestmentYen
-    ? formatMoney(project.financialMaster.investment.totalInvestmentYen, 'manYen', 'floor')
-    : '10,000万円';
-  const machCost = project?.financialMaster?.investment?.newMachineryInvestment
-    ? formatMoney(project.financialMaster.investment.newMachineryInvestment, 'manYen', 'floor')
+
+  // 設備投資額・申請額
+  const totalInvYen = fm?.investment?.totalInvestmentYen ?? 0;
+  const subsidyRequestedYen = fm?.investment?.subsidyRequestedYen ?? 0;
+  const totalInv =
+    totalInvYen > 0 ? formatMoney(totalInvYen, 'manYen') : '10,000万円';
+  const subsidyReqStr =
+    subsidyRequestedYen > 0
+      ? formatMoney(subsidyRequestedYen, 'manYen')
+      : '5,000万円';
+
+  // 機械装置費・システム費
+  const machCost = fm?.investment?.newMachineryInvestment
+    ? formatMoney(fm.investment.newMachineryInvestment, 'manYen', 'floor')
     : '8,500万円';
-  const sysCost = project?.financialMaster?.investment?.intangibleAssetInvestment
-    ? formatMoney(project.financialMaster.investment.intangibleAssetInvestment, 'manYen', 'floor')
+  const sysCost = fm?.investment?.intangibleAssetInvestment
+    ? formatMoney(fm.investment.intangibleAssetInvestment, 'manYen', 'floor')
     : '1,500万円';
+
+  // 期間データから取得
+  const periods = fm?.periods;
+  const planningYears = fm?.planningYears || 3;
+  const finalKey: PeriodKey =
+    planningYears === 3 ? 'p3' : planningYears === 4 ? 'p4' : 'p5';
+
+  const y0PL = periods?.y0?.pl;
+  const p1PL = periods?.p1?.pl;
+  const finalPL = periods?.[finalKey]?.pl;
+
+  // {直前期売上} = periods.y0.pl.totalSales
+  const lastSales =
+    y0PL?.totalSales != null ? formatMoney(y0PL.totalSales, 'manYen') : '24億円';
+  // {初年度売上} = periods.p1.pl.totalSales
+  const firstSales =
+    p1PL?.totalSales != null ? formatMoney(p1PL.totalSales, 'manYen') : '26.5億円';
+  // {3年後売上} = 最終年度（p{planningYears}）の totalSales
+  const finalSales =
+    finalPL?.totalSales != null
+      ? formatMoney(finalPL.totalSales, 'manYen')
+      : '31.8億円';
+  // {売上増加額} = 最終年度 − y0
+  const salesIncrease =
+    finalPL?.totalSales != null && y0PL?.totalSales != null
+      ? formatMoney(finalPL.totalSales - y0PL.totalSales, 'manYen')
+      : '7.8億円';
+
+  // {3年後営業利益率} = 最終年度の totalOperatingProfit ÷ totalSales ×100（小数1桁）
+  let finalOpMarginStr = '7.5%';
+  if (finalPL && finalPL.totalSales > 0) {
+    const margin = (finalPL.totalOperatingProfit / finalPL.totalSales) * 100;
+    finalOpMarginStr = `${margin.toFixed(1)}%`;
+  }
+
+  // 要件評価（CAGR等）
+  const activeRound = INITIAL_CALL_ROUNDS[0];
+  const resolvedTrack =
+    track ||
+    (fm?.appliedTrackId
+      ? activeRound.tracks.find((t) => t.id === fm.appliedTrackId)
+      : undefined) ||
+    activeRound.tracks[0];
+  const resolvedReq = req || activeRound.requirements;
+
+  let vaGrowthRateStr = '4.2%';
+  let wageGrowthRateStr = '3.8%';
+  if (fm && periods?.baseFY && periods?.[finalKey]) {
+    try {
+      const evalRes = evaluateRequirements(fm, resolvedTrack, resolvedReq);
+      vaGrowthRateStr = `${evalRes.vaCAGR.toFixed(1)}%`;
+      wageGrowthRateStr = `${evalRes.wageCAGR.toFixed(1)}%`;
+    } catch {
+      // フォールバック
+    }
+  }
+
+  // {従業員数} = periods.y0.pl.numberOfEmployees
+  const employeesStr =
+    y0PL?.numberOfEmployees != null ? `${y0PL.numberOfEmployees}名` : '48名';
 
   let output = templateText;
   const replacements: Record<string, string> = {
@@ -807,59 +984,213 @@ export function interpolateTags(templateText: string, project: any): string {
     '{設備投資額}': totalInv,
     '{機械装置費}': machCost,
     '{システム費}': sysCost,
-    '{補助金申請額}': '5,000万円',
-    '{直前期売上}': '24億円',
-    '{初年度売上}': '26.5億円',
-    '{3年後売上}': '31.8億円',
-    '{売上増加額}': '7.8億円',
-    '{3年後営業利益率}': '7.5%',
-    '{付加価値額年率}': '4.2%',
-    '{一人当たり給与伸び率}': '3.8%',
-    '{給与伸び率}': '3.8%',
+    '{補助金申請額}': subsidyReqStr,
+    '{直前期売上}': lastSales,
+    '{初年度売上}': firstSales,
+    '{3年後売上}': finalSales,
+    '{売上増加額}': salesIncrease,
+    '{3年後営業利益率}': finalOpMarginStr,
+    '{付加価値額年率}': vaGrowthRateStr,
+    '{一人当たり給与伸び率}': wageGrowthRateStr,
+    '{給与伸び率}': wageGrowthRateStr,
     '{回収年数}': '3.2年',
     '{年間CF増加額}': '3,100万円',
     '{削減時間}': '70%（14日→4日）',
-    '{従業員数}': '48名',
+    '{従業員数}': employeesStr,
     '{新事業客単価}': '500,000円',
     '{初年度客数}': '50件',
     '{年間削減時間}': '960時間',
     '{新規雇用人数}': '2名',
   };
+
   Object.entries(replacements).forEach(([k, v]) => {
     output = output.split(k).join(v);
   });
   return output;
 }
 
-export function buildConsistencyCheckItems(project: any, subsidyType?: any, thresholds?: any): any[] {
-  return [
-    {
-      id: 'chk-1',
-      category: '投資額',
-      label: '設備投資総額の整合',
-      documentSnippet: '100,000,000円',
-      financialValue: '100,000,000円',
-      status: 'match',
-      note: '本文の設備投資額と収支計画の総投資額が一致しています。',
-    },
-    {
-      id: 'chk-2',
-      category: '効果・数値',
-      label: '新製品等1年当たり売上見込額の整合',
-      documentSnippet: '596,000,000円',
-      financialValue: '630,000,000円',
-      status: 'mismatch',
-      note: 'インポート用フォーマット値（596,000,000円）とv36収益計画値（630,000,000円）に不一致があります。',
-      isWarning: true,
-    },
-    {
-      id: 'chk-3',
-      category: '人件費・体制',
-      label: '一人当たり給与CAGRと賃上げ要件',
-      documentSnippet: '給与CAGR 3.8%',
-      financialValue: '年率3.8%（要件3.5%以上達成）',
-      status: 'match',
-      note: '公募要領の賃上げ要件をクリアしています。',
-    },
-  ];
+/**
+ * 定性・定量 整合性チェックリスト項目の動的構築
+ * @param project 対象プロジェクト
+ * @param _subsidyType 申請類型
+ * @param _thresholds 閾値
+ * @param track 対象申請枠
+ * @param req 対象公募要件
+ */
+export function buildConsistencyCheckItems(
+  project: any,
+  _subsidyType?: any,
+  _thresholds?: any,
+  track?: SubsidyTrack,
+  req?: SubsidyRequirements
+): ConsistencyCheckItem[] {
+  const fm: ProjectFinancialMaster | undefined = project?.financialMaster;
+  const activeRound = INITIAL_CALL_ROUNDS[0];
+  const resolvedTrack =
+    track ||
+    (fm?.appliedTrackId
+      ? activeRound.tracks.find((t) => t.id === fm.appliedTrackId)
+      : undefined) ||
+    activeRound.tracks[0];
+  const resolvedReq = req || activeRound.requirements;
+
+  // 全セクション本文のテキスト結合
+  let fullSectionContent = '';
+  if (project?.sections && typeof project.sections === 'object') {
+    Object.values(project.sections).forEach((secList: any) => {
+      if (Array.isArray(secList)) {
+        secList.forEach((s) => {
+          if (s?.content) fullSectionContent += ' ' + s.content;
+        });
+      }
+    });
+  }
+
+  // ① 総投資額
+  // 申請書の全セクション本文に formatMoney(totalInvestmentYen, 'manYen') の数値部分が含まれていれば match、含まれなければ unverified
+  const totalInvYen = fm?.investment?.totalInvestmentYen || 0;
+  const formattedTotalInv = formatMoney(totalInvYen, 'manYen');
+  const numPartWithComma = formattedTotalInv.replace(/[^0-9,]/g, '').trim();
+  const numPartPure = formattedTotalInv.replace(/[^0-9]/g, '').trim();
+  const isTotalInvMatched =
+    Boolean(totalInvYen > 0) &&
+    (fullSectionContent.includes(formattedTotalInv) ||
+      (numPartWithComma !== '' && fullSectionContent.includes(numPartWithComma)) ||
+      (numPartPure !== '' && fullSectionContent.includes(numPartPure)));
+
+  const chk1: ConsistencyCheckItem = {
+    id: 'chk-1',
+    category: '投資額',
+    label: '設備投資総額の整合',
+    documentSnippet: isTotalInvMatched
+      ? formattedTotalInv
+      : '未記載（本文に投資額の記載が見当たりません）',
+    financialValue: formatMoney(totalInvYen, 'yen'),
+    status: isTotalInvMatched ? 'match' : 'unverified',
+    note: isTotalInvMatched
+      ? '本文の設備投資額と収支計画の総投資額が整合しています。'
+      : `申請書本文に設備投資総額（${formattedTotalInv}）の数値記載が見当たりません。本文への追記を推奨します。`,
+    isWarning: !isTotalInvMatched,
+  };
+
+  // ② 1年当たり売上見込額
+  // annualSalesEstimate.hasMismatch が true なら mismatch（documentSnippet にインポート用の値、financialValue に v36 の値）
+  const annualSales = fm?.annualSalesEstimate;
+  const officialSalesYen = annualSales?.officialFormatValueYen ?? 0;
+  const v36SalesYen = annualSales?.v36ExcelValueYen ?? 0;
+  const hasMismatch = Boolean(annualSales?.hasMismatch);
+  const chk2: ConsistencyCheckItem = {
+    id: 'chk-2',
+    category: '効果・数値',
+    label: '新製品等1年当たり売上見込額の整合',
+    documentSnippet: `${formatMoney(officialSalesYen, 'yen')}`,
+    financialValue: `${formatMoney(v36SalesYen, 'yen')}`,
+    status: hasMismatch ? 'mismatch' : 'match',
+    note: hasMismatch
+      ? `インポート用フォーマット値（${formatMoney(officialSalesYen, 'yen')}）とv36収益計画値（${formatMoney(v36SalesYen, 'yen')}）に不一致があります。`
+      : 'インポート用フォーマット値とv36収益計画値が一致しています。',
+    isWarning: hasMismatch,
+  };
+
+  // 要件判定（③〜⑥）
+  let evalResult: EvaluationResult | null = null;
+  if (fm && fm.periods) {
+    try {
+      evalResult = evaluateRequirements(fm, resolvedTrack, resolvedReq);
+    } catch {
+      evalResult = null;
+    }
+  }
+
+  // ③ 付加価値額CAGR：要件を満たしていれば match、未達なら mismatch
+  const vaTarget = resolvedReq.valueAddedCAGR;
+  const vaCAGR = evalResult ? evalResult.vaCAGR : 0;
+  const isVaPassed = evalResult ? evalResult.isVAPassed : false;
+  const chk3: ConsistencyCheckItem = {
+    id: 'chk-3',
+    category: '公募要件',
+    label: '付加価値額CAGRの達成',
+    documentSnippet: `年率${vaTarget}%以上（要件目標）`,
+    financialValue: `年率${vaCAGR.toFixed(1)}%`,
+    status: isVaPassed ? 'match' : 'mismatch',
+    note: isVaPassed
+      ? `付加価値額年率伸び率が公募要件（${vaTarget}%以上）を達成しています。`
+      : `付加価値額年率伸び率（${vaCAGR.toFixed(1)}%）が公募要件（${vaTarget}%以上）に達していません。`,
+    isWarning: !isVaPassed,
+  };
+
+  // ④ 一人当たり給与CAGR：同上（賃上げ特例の有無を考慮）
+  const wageTarget = fm?.isWageSpecialApplied
+    ? resolvedReq.wageSpecialCAGR
+    : resolvedReq.wageCAGR;
+  const wageCAGR = evalResult ? evalResult.wageCAGR : 0;
+  const isWagePassed = evalResult ? evalResult.isWagePassed : false;
+  const chk4: ConsistencyCheckItem = {
+    id: 'chk-4',
+    category: '人件費・体制',
+    label: '一人当たり給与CAGRと賃上げ要件',
+    documentSnippet: `年率${wageTarget}%以上（${fm?.isWageSpecialApplied ? '賃上げ特例' : '通常要件'}）`,
+    financialValue: `年率${wageCAGR.toFixed(1)}%`,
+    status: isWagePassed ? 'match' : 'mismatch',
+    note: isWagePassed
+      ? `一人当たり給与年率伸び率が公募要件（${wageTarget}%以上）を達成しています。`
+      : `一人当たり給与年率伸び率（${wageCAGR.toFixed(1)}%）が要件（${wageTarget}%以上）に達していません。`,
+    isWarning: !isWagePassed,
+  };
+
+  // ⑤ 事業場内最低賃金：同上
+  const minWageTargetDiff = fm?.isWageSpecialApplied
+    ? resolvedReq.wageSpecialMinWageDiffYen
+    : resolvedReq.minWageDiffYen;
+  const minWageDiff = evalResult ? evalResult.minWageDiff : 0;
+  const isMinWagePassed = evalResult ? evalResult.isMinWagePassed : false;
+  const chk5: ConsistencyCheckItem = {
+    id: 'chk-5',
+    category: '人件費・体制',
+    label: '事業場内最低賃金の地域差額要件',
+    documentSnippet: `地域別最低賃金 +${minWageTargetDiff}円以上`,
+    financialValue: `差額 +${minWageDiff}円`,
+    status: isMinWagePassed ? 'match' : 'mismatch',
+    note: isMinWagePassed
+      ? `地域別最低賃金との差額（+${minWageDiff}円）が要件（+${minWageTargetDiff}円以上）をクリアしています。`
+      : `地域別最低賃金との差額（+${minWageDiff}円）が要件（+${minWageTargetDiff}円以上）を満たしていません。`,
+    isWarning: !isMinWagePassed,
+  };
+
+  // ⑥ 足下の賃上げ：同上
+  const nearTermRate = evalResult ? evalResult.nearTermWageGrowthRate : 0;
+  const isNearTermPassed = evalResult ? evalResult.isNearTermWagePassed : false;
+  const chk6: ConsistencyCheckItem = {
+    id: 'chk-6',
+    category: '人件費・体制',
+    label: '足下の賃上げ要件（直近期→基準年度）',
+    documentSnippet: `物価上昇率 ${resolvedReq.inflationRatePercent}% 以上`,
+    financialValue: `伸び率 ${nearTermRate.toFixed(2)}%`,
+    status: isNearTermPassed ? 'match' : 'mismatch',
+    note: isNearTermPassed
+      ? `足下の給与伸び率が物価上昇率（${resolvedReq.inflationRatePercent}%）を満たしています。`
+      : `足下の給与伸び率（${nearTermRate.toFixed(2)}%）が物価上昇率（${resolvedReq.inflationRatePercent}%）に達していません。`,
+    isWarning: !isNearTermPassed,
+  };
+
+  // ⑦ 決算書の取込：periodImports の3期がすべてロック済みなら match、それ以外は unverified
+  const periodImports = fm?.periodImports;
+  const lockedCount = ['yMinus2', 'yMinus1', 'y0'].filter(
+    (k) => periodImports?.[k as 'yMinus2' | 'yMinus1' | 'y0']?.isLocked
+  ).length;
+  const isImportsLocked = lockedCount === 3;
+  const chk7: ConsistencyCheckItem = {
+    id: 'chk-7',
+    category: '根拠・実績',
+    label: '過去決算書（3期）の取込・確定',
+    documentSnippet: `過去3期中 ${lockedCount}期確定ロック済`,
+    financialValue: '3期すべてロック確定必須',
+    status: isImportsLocked ? 'match' : 'unverified',
+    note: isImportsLocked
+      ? '過去3期（前々期・前期・直近期）の決算書取込がすべて確定・ロックされています。'
+      : `過去3期の決算書取込が一部未確定です（${lockedCount}/3期確定）。見比べ画面で全期の確定ロックを行ってください。`,
+    isWarning: !isImportsLocked,
+  };
+
+  return [chk1, chk2, chk3, chk4, chk5, chk6, chk7];
 }
