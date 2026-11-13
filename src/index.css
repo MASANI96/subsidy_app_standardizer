@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+@layer base {
+  * {
+    border-color: var(--color-slate-200);
+  }
+}
+
+@keyframes guidePulse {
+  0%, 100% {
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.75), 0 0 0 7px rgba(59, 130, 246, 0.25);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.95), 0 0 0 11px rgba(59, 130, 246, 0.12);
+  }
+}
+
+.guide-highlight-active {
+  position: relative;
+  z-index: 25;
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+  border-radius: 4px;
+  animation: guidePulse 1.5s ease-in-out infinite;
+}
+
